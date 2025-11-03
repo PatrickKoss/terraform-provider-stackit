@@ -217,13 +217,25 @@ func (g *gitResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 
 	gitInstanceId := *gitInstanceResp.Id
-	_, err = wait.CreateGitInstanceWaitHandler(ctx, g.client, projectId, gitInstanceId).WaitWithContext(ctx)
-	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating git instance", fmt.Sprintf("Git instance creation waiting: %v", err))
+
+	// Save minimal state immediately to prevent orphaned resources if wait fails
+	model.InstanceId = types.StringValue(gitInstanceId)
+	model.Id = utils.BuildInternalTerraformId(projectId, gitInstanceId)
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	err = mapFields(ctx, gitInstanceResp, &model)
+	// Now wait for resource to be ready
+	waitResp, err := wait.CreateGitInstanceWaitHandler(ctx, g.client, projectId, gitInstanceId).WaitWithContext(ctx)
+	if err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating git instance", fmt.Sprintf("Git instance creation waiting: %v. The instance was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		return
+	}
+
+	// Map full response and update state
+	err = mapFields(ctx, waitResp, &model)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating git instance", fmt.Sprintf("Mapping fields: %v", err))
 		return
@@ -306,13 +318,19 @@ func (g *gitResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 	// Call API to delete the existing git instance.
 	err := g.client.DeleteInstance(ctx, projectId, instanceId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Git instance already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting git instance", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
 
 	_, err = wait.DeleteGitInstanceWaitHandler(ctx, g.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error waiting for instance deletion", fmt.Sprintf("Instance deletion waiting: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting git instance", fmt.Sprintf("Git instance deletion waiting: %v. The instance deletion was triggered but confirmation timed out. The instance may still be deleting. Check the STACKIT Portal or retry the operation.", err))
 		return
 	}
 
