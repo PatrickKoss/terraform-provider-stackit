@@ -769,9 +769,22 @@ func (r *loadBalancerResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	waitResp, err := wait.CreateLoadBalancerWaitHandler(ctx, r.client, projectId, region, *createResp.Name).SetTimeout(90 * time.Minute).WaitWithContext(ctx)
+	// Save Name and Id immediately to state for idempotency
+	// This ensures that if the wait fails, Terraform still knows about the resource
+	name := *createResp.Name
+	model.Name = types.StringValue(name)
+	model.Id = utils.BuildInternalTerraformId(projectId, region, name)
+	model.Region = types.StringValue(region)
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Wait for load balancer to be ready
+	waitResp, err := wait.CreateLoadBalancerWaitHandler(ctx, r.client, projectId, region, name).SetTimeout(90 * time.Minute).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating load balancer", fmt.Sprintf("Load balancer creation waiting: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating load balancer", fmt.Sprintf("Load balancer creation waiting: %v. The load balancer was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
 		return
 	}
 
@@ -920,13 +933,19 @@ func (r *loadBalancerResource) Delete(ctx context.Context, req resource.DeleteRe
 	// Delete load balancer
 	_, err := r.client.DeleteLoadBalancer(ctx, projectId, region, name).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Load balancer already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting load balancer", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
 
 	_, err = wait.DeleteLoadBalancerWaitHandler(ctx, r.client, projectId, region, name).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting load balancer", fmt.Sprintf("Load balancer deleting waiting: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting load balancer", fmt.Sprintf("Load balancer deletion waiting: %v. The load balancer deletion was triggered but confirmation timed out. The load balancer may still be deleting. Check the STACKIT Portal or retry the operation.", err))
 		return
 	}
 
