@@ -315,9 +315,20 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 	}
 	instanceId := *createResp.InstanceId
 	ctx = tflog.SetField(ctx, "instance_id", instanceId)
+
+	// This ensures that if wait fails or context is canceled, Terraform still knows about the instance
+	model.InstanceId = types.StringValue(instanceId)
+	model.Id = types.StringValue(fmt.Sprintf("%s,%s", projectId, instanceId))
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Wait for instance to be ready
 	waitResp, err := wait.CreateInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating instance", fmt.Sprintf("Instance creation waiting: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating instance", fmt.Sprintf("Instance creation waiting: %v. The instance was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
 		return
 	}
 
@@ -425,9 +436,11 @@ func (r *instanceResource) Update(ctx context.Context, req resource.UpdateReques
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating instance", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	// Wait for update to complete
 	waitResp, err := wait.PartialUpdateInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating instance", fmt.Sprintf("Instance update waiting: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating instance", fmt.Sprintf("Instance update waiting: %v. The update was triggered but may not be complete. Run 'terraform refresh' to check the current state.", err))
 		return
 	}
 
@@ -463,12 +476,20 @@ func (r *instanceResource) Delete(ctx context.Context, req resource.DeleteReques
 	// Delete existing instance
 	err := r.client.DeleteInstance(ctx, projectId, instanceId).Execute()
 	if err != nil {
+		// If instance is already gone (404 or 410), treat as success for idempotency
+		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Instance already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting instance", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	// Wait for deletion to complete
 	_, err = wait.DeleteInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting instance", fmt.Sprintf("Instance deletion waiting: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting instance", fmt.Sprintf("Instance deletion waiting: %v. The instance deletion was triggered but confirmation timed out. The instance may still be deleting. Check the STACKIT Portal or retry the operation.", err))
 		return
 	}
 	tflog.Info(ctx, "MariaDB instance deleted")
