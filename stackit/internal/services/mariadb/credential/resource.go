@@ -186,13 +186,24 @@ func (r *credentialResource) Create(ctx context.Context, req resource.CreateRequ
 	credentialId := *credentialsResp.Id
 	ctx = tflog.SetField(ctx, "credential_id", credentialId)
 
-	waitResp, err := wait.CreateCredentialsWaitHandler(ctx, r.client, projectId, instanceId, credentialId).WaitWithContext(ctx)
-	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credential", fmt.Sprintf("Instance creation waiting: %v", err))
+	// Save minimal state immediately to prevent orphaned resources
+	model.CredentialId = types.StringValue(credentialId)
+	model.Id = types.StringValue(fmt.Sprintf("%s,%s,%s", projectId, instanceId, credentialId))
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Map response body to schema
+	// Wait for credential to be ready
+	waitResp, err := wait.CreateCredentialsWaitHandler(ctx, r.client, projectId, instanceId, credentialId).WaitWithContext(ctx)
+	if err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credential",
+			fmt.Sprintf("Credential creation waiting: %v. The credential was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		return
+	}
+
+	// Map full response and update state
 	err = mapFields(ctx, waitResp, &model)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credential", fmt.Sprintf("Processing API payload: %v", err))
@@ -270,14 +281,24 @@ func (r *credentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 	ctx = tflog.SetField(ctx, "instance_id", instanceId)
 	ctx = tflog.SetField(ctx, "credential_id", credentialId)
 
-	// Delete existing record set
+	// Delete existing credential
 	err := r.client.DeleteCredentials(ctx, projectId, instanceId, credentialId).Execute()
 	if err != nil {
+		// If credential is already gone (404 or 410), treat as success for idempotency
+		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Credential already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting credential", fmt.Sprintf("Calling API: %v", err))
+		return
 	}
+
+	// Wait for deletion to complete
 	_, err = wait.DeleteCredentialsWaitHandler(ctx, r.client, projectId, instanceId, credentialId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting credential", fmt.Sprintf("Instance deletion waiting: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting credential",
+			fmt.Sprintf("Credential deletion waiting: %v. The credential deletion was triggered but confirmation timed out. The credential may still be deleting. Check the STACKIT Portal or retry the operation.", err))
 		return
 	}
 	tflog.Info(ctx, "MariaDB credential deleted")
