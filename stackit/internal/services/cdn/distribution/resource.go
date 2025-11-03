@@ -348,12 +348,25 @@ func (r *distributionResource) Create(ctx context.Context, req resource.CreateRe
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN distribution", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
-	waitResp, err := wait.CreateDistributionPoolWaitHandler(ctx, r.client, projectId, *createResp.Distribution.Id).SetTimeout(5 * time.Minute).WaitWithContext(ctx)
-	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN distribution", fmt.Sprintf("Waiting for create: %v", err))
+	distributionId := *createResp.Distribution.Id
+
+	// Save minimal state immediately to ensure idempotency
+	model.DistributionId = types.StringValue(distributionId)
+	model.ID = utils.BuildInternalTerraformId(projectId, distributionId)
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	// Wait for distribution to be ready
+	waitResp, err := wait.CreateDistributionPoolWaitHandler(ctx, r.client, projectId, distributionId).SetTimeout(5 * time.Minute).WaitWithContext(ctx)
+	if err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN distribution", fmt.Sprintf("Distribution creation waiting: %v. The distribution was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		return
+	}
+
+	// Map full response and update state
 	err = mapFields(ctx, waitResp.Distribution, &model)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN distribution", fmt.Sprintf("Processing API payload: %v", err))
@@ -386,7 +399,7 @@ func (r *distributionResource) Read(ctx context.Context, req resource.ReadReques
 		var oapiErr *oapierror.GenericOpenAPIError
 		// n.b. err is caught here if of type *oapierror.GenericOpenAPIError, which the stackit SDK client returns
 		if errors.As(err, &oapiErr) {
-			if oapiErr.StatusCode == http.StatusNotFound {
+			if oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone {
 				resp.State.RemoveResource(ctx)
 				return
 			}
@@ -518,7 +531,7 @@ func (r *distributionResource) Update(ctx context.Context, req resource.UpdateRe
 
 	waitResp, err := wait.UpdateDistributionWaitHandler(ctx, r.client, projectId, distributionId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Update CDN distribution", fmt.Sprintf("Waiting for update: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating CDN distribution", fmt.Sprintf("Distribution update waiting: %v. The update was triggered but may not be complete. Run 'terraform refresh' to check the current state.", err))
 		return
 	}
 
@@ -548,13 +561,23 @@ func (r *distributionResource) Delete(ctx context.Context, req resource.DeleteRe
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	ctx = tflog.SetField(ctx, "distribution_id", distributionId)
 
+	// Delete existing distribution
 	_, err := r.client.DeleteDistribution(ctx, projectId, distributionId).Execute()
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Delete CDN distribution", fmt.Sprintf("Delete distribution: %v", err))
+		// If distribution is already gone (404 or 410), treat as success for idempotency
+		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "CDN distribution already deleted")
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN distribution", fmt.Sprintf("Calling API: %v", err))
+		return
 	}
+
+	// Wait for deletion to complete
 	_, err = wait.DeleteDistributionWaitHandler(ctx, r.client, projectId, distributionId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Delete CDN distribution", fmt.Sprintf("Waiting for deletion: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN distribution", fmt.Sprintf("Distribution deletion waiting: %v. The distribution deletion was triggered but confirmation timed out. The distribution may still be deleting. Check the STACKIT Portal or retry the operation.", err))
 		return
 	}
 	tflog.Info(ctx, "CDN distribution deleted")
