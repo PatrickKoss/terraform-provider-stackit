@@ -1,0 +1,169 @@
+name: Service Acceptance Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service name to test (e.g., mariadb, redis, etc.)'
+        required: true
+        type: string
+      pr_number:
+        description: 'Pull Request number'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: read
+
+jobs:
+  check-permissions:
+    name: Check User Permissions
+    runs-on: ubuntu-latest
+    outputs:
+      has-permission: ${{ steps.check.outputs.has-permission }}
+    steps:
+      - name: Check if user has write permission
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor
+            });
+
+            const hasPermission = ['admin', 'write', 'maintain'].includes(permission.permission);
+            console.log(`User ${context.actor} has permission: ${permission.permission}`);
+            console.log(`Has required permission: ${hasPermission}`);
+
+            core.setOutput('has-permission', hasPermission);
+
+            if (!hasPermission) {
+              core.setFailed(`User ${context.actor} does not have permission to run acceptance tests. Required: write, maintain, or admin`);
+            }
+
+  get-pr-info:
+    name: Get PR Information
+    needs: check-permissions
+    if: needs.check-permissions.outputs.has-permission == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.pr.outputs.sha }}
+      ref: ${{ steps.pr.outputs.ref }}
+    steps:
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ inputs.pr_number }}
+            });
+
+            core.setOutput('sha', pr.head.sha);
+            core.setOutput('ref', pr.head.ref);
+
+  run-acceptance-tests:
+    name: Run Acceptance Tests for ${{ inputs.service }}
+    needs: [check-permissions, get-pr-info]
+    if: needs.check-permissions.outputs.has-permission == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update status to running
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.get-pr-info.outputs.sha }}',
+              state: 'pending',
+              context: 'acceptance-test/${{ inputs.service }}',
+              description: 'Running acceptance tests...',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.get-pr-info.outputs.ref }}
+
+      - name: Install project tools and dependencies
+        run: make project-tools
+
+      - name: Validate service exists
+        run: |
+          if [ ! -d "stackit/internal/services/${{ inputs.service }}" ]; then
+            echo "Service '${{ inputs.service }}' does not exist"
+            exit 1
+          fi
+
+      - name: Run acceptance tests
+        id: test
+        run: |
+          make test-acceptance-service \
+            SERVICE=${{ inputs.service }} \
+            TF_ACC_PROJECT_ID=${{ secrets.TF_ACC_PROJECT_ID }} \
+            TF_ACC_ORGANIZATION_ID=${{ secrets.TF_ACC_ORGANIZATION_ID }} \
+            TF_ACC_REGION="eu01"
+        env:
+          STACKIT_SERVICE_ACCOUNT_TOKEN: ${{ secrets.TF_ACC_SERVICE_ACCOUNT_TOKEN }}
+          TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_EMAIL: ${{ secrets.TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_EMAIL }}
+          TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_TOKEN: ${{ secrets.TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_TOKEN }}
+          TF_ACC_TEST_PROJECT_PARENT_CONTAINER_ID: ${{ secrets.TF_ACC_TEST_PROJECT_PARENT_CONTAINER_ID }}
+          TF_ACC_TEST_PROJECT_PARENT_UUID: ${{ secrets.TF_ACC_TEST_PROJECT_PARENT_UUID }}
+          TF_ACC_TEST_PROJECT_USER_EMAIL: ${{ secrets.TF_ACC_TEST_PROJECT_USER_EMAIL }}
+
+      - name: Update status to success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.get-pr-info.outputs.sha }}',
+              state: 'success',
+              context: 'acceptance-test/${{ inputs.service }}',
+              description: 'Acceptance tests passed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+      - name: Update status to failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: '${{ needs.get-pr-info.outputs.sha }}',
+              state: 'failure',
+              context: 'acceptance-test/${{ inputs.service }}',
+              description: 'Acceptance tests failed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+      - name: Comment on PR with results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ steps.test.outcome }}' === 'success' ? '✅ PASSED' : '❌ FAILED';
+            const emoji = '${{ steps.test.outcome }}' === 'success' ? '✅' : '❌';
+
+            const comment = `${emoji} **Acceptance tests for \`${{ inputs.service }}\` ${status}**\n\n` +
+              `Triggered by: @${context.actor}\n` +
+              `Run details: [View workflow run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ inputs.pr_number }},
+              body: comment
+            });

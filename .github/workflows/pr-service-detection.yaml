@@ -1,0 +1,156 @@
+name: PR Service Detection
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'stackit/internal/services/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  detect-changed-services:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed services
+        id: detect
+        run: |
+          # Get the base branch
+          git fetch origin ${{ github.base_ref }}
+
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          # Extract unique service names from changed files
+          SERVICES=$(echo "$CHANGED_FILES" | \
+            grep "^stackit/internal/services/" | \
+            sed 's|^stackit/internal/services/||' | \
+            cut -d'/' -f1 | \
+            sort -u | \
+            jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          echo "Detected services: $SERVICES"
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+
+          # Store in a file for the next step
+          echo "$SERVICES" > services.json
+
+      - name: Upload services list
+        uses: actions/upload-artifact@v4
+        with:
+          name: changed-services
+          path: services.json
+
+  create-pending-checks:
+    name: Create Pending Status Checks
+    needs: detect-changed-services
+    if: needs.detect-changed-services.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: ${{ fromJson(needs.detect-changed-services.outputs.services) }}
+    steps:
+      - name: Create pending status check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const service = '${{ matrix.service }}';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'pending',
+              context: `acceptance-test/${service}`,
+              description: `Waiting for manual trigger`,
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/service-acc-test.yaml`
+            });
+
+  post-comment:
+    name: Post PR Comment with Test Triggers
+    needs: detect-changed-services
+    if: needs.detect-changed-services.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download services list
+        uses: actions/download-artifact@v4
+        with:
+          name: changed-services
+
+      - name: Post comment with trigger buttons
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const services = JSON.parse(fs.readFileSync('services.json', 'utf8'));
+
+            if (services.length === 0) {
+              console.log('No services changed');
+              return;
+            }
+
+            // Create markdown for the comment
+            let comment = '## 🔬 Acceptance Tests Required\n\n';
+            comment += 'The following services have been modified and require acceptance testing:\n\n';
+
+            for (const service of services) {
+              comment += `### \`${service}\` ![Status](https://img.shields.io/badge/status-pending-yellow)\n\n`;
+              comment += `**To run tests, comment:**\n`;
+              comment += '```\n';
+              comment += `/test ${service}\n`;
+              comment += '```\n\n';
+            }
+
+            comment += '---\n\n';
+            comment += '### Quick Reference\n\n';
+            comment += 'Test a single service:\n';
+            comment += '```\n';
+            comment += '/test <service-name>\n';
+            comment += '```\n\n';
+            comment += '**Example:**\n';
+            comment += '- `/test mariadb`\n';
+            comment += '- `/test redis`\n';
+            comment += '- `/test-mariadb` (alternative format)\n\n';
+            comment += '> ⚠️ **Note**: Only repository maintainers and owners can trigger tests.\n\n';
+            comment += '> ✅ All acceptance tests must pass before this PR can be merged.\n\n';
+            comment += `> 📖 [Full documentation](.github/ACCEPTANCE_TESTS.md)\n`;
+
+            // Check if we already posted a comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('## 🔬 Acceptance Tests Required')
+            );
+
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: comment
+              });
+            }

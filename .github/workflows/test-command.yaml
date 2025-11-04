@@ -1,0 +1,251 @@
+name: Test Command Handler
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  handle-test-command:
+    name: Handle Test Command
+    # Only run on PR comments that start with /test
+    if: |
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/test')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check permissions
+        id: check-permission
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor
+            });
+
+            const hasPermission = ['admin', 'write', 'maintain'].includes(permission.permission);
+            console.log(`User ${context.actor} has permission: ${permission.permission}`);
+
+            if (!hasPermission) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `❌ @${context.actor} does not have permission to trigger acceptance tests.\n\nRequired permissions: write, maintain, or admin.`
+              });
+              core.setFailed('Insufficient permissions');
+              return;
+            }
+
+            core.setOutput('has-permission', hasPermission);
+
+      - name: Parse command and extract service
+        id: parse
+        if: steps.check-permission.outputs.has-permission == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = context.payload.comment.body.trim();
+            console.log(`Comment: ${comment}`);
+
+            // Match patterns like:
+            // /test mariadb
+            // /test-mariadb
+            // /test service=mariadb
+            let service = null;
+
+            // Pattern 1: /test mariadb
+            let match = comment.match(/^\/test\s+([a-zA-Z0-9_-]+)$/);
+            if (match) {
+              service = match[1];
+            }
+
+            // Pattern 2: /test-mariadb
+            if (!service) {
+              match = comment.match(/^\/test-([a-zA-Z0-9_-]+)$/);
+              if (match) {
+                service = match[1];
+              }
+            }
+
+            if (!service) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `❌ Invalid command format.\n\nUsage:\n- \`/test <service>\` (e.g., \`/test mariadb\`)\n- \`/test-<service>\` (e.g., \`/test-mariadb\`)`
+              });
+              core.setFailed('Invalid command format');
+              return;
+            }
+
+            console.log(`Parsed service: ${service}`);
+            core.setOutput('service', service);
+
+      - name: Get PR details
+        id: pr
+        if: steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+
+            core.setOutput('sha', pr.head.sha);
+            core.setOutput('ref', pr.head.ref);
+
+      - name: Acknowledge command
+        if: steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const service = '${{ steps.parse.outputs.service }}';
+
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `🚀 Starting acceptance tests for \`${service}\`...\n\nTriggered by: @${context.actor}`
+            });
+
+      - name: Update status to running
+        if: steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const service = '${{ steps.parse.outputs.service }}';
+            const sha = '${{ steps.pr.outputs.sha }}';
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: sha,
+              state: 'pending',
+              context: `acceptance-test/${service}`,
+              description: 'Running acceptance tests...',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+      - name: Checkout PR
+        if: steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+
+      - name: Install project tools and dependencies
+        if: steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        run: make project-tools
+
+      - name: Validate service exists
+        if: steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        id: validate
+        run: |
+          SERVICE="${{ steps.parse.outputs.service }}"
+          if [ ! -d "stackit/internal/services/$SERVICE" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Service '$SERVICE' does not exist"
+            exit 1
+          fi
+          echo "exists=true" >> $GITHUB_OUTPUT
+
+      - name: Run acceptance tests
+        if: steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service && steps.validate.outputs.exists == 'true'
+        id: test
+        run: |
+          make test-acceptance-service \
+            SERVICE=${{ steps.parse.outputs.service }} \
+            TF_ACC_PROJECT_ID=${{ secrets.TF_ACC_PROJECT_ID }} \
+            TF_ACC_ORGANIZATION_ID=${{ secrets.TF_ACC_ORGANIZATION_ID }} \
+            TF_ACC_REGION="eu01"
+        env:
+          STACKIT_SERVICE_ACCOUNT_TOKEN: ${{ secrets.TF_ACC_SERVICE_ACCOUNT_TOKEN }}
+          TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_EMAIL: ${{ secrets.TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_EMAIL }}
+          TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_TOKEN: ${{ secrets.TF_ACC_TEST_PROJECT_SERVICE_ACCOUNT_TOKEN }}
+          TF_ACC_TEST_PROJECT_PARENT_CONTAINER_ID: ${{ secrets.TF_ACC_TEST_PROJECT_PARENT_CONTAINER_ID }}
+          TF_ACC_TEST_PROJECT_PARENT_UUID: ${{ secrets.TF_ACC_TEST_PROJECT_PARENT_UUID }}
+          TF_ACC_TEST_PROJECT_USER_EMAIL: ${{ secrets.TF_ACC_TEST_PROJECT_USER_EMAIL }}
+
+      - name: Update status and comment on success
+        if: success() && steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const service = '${{ steps.parse.outputs.service }}';
+            const sha = '${{ steps.pr.outputs.sha }}';
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: sha,
+              state: 'success',
+              context: `acceptance-test/${service}`,
+              description: 'Acceptance tests passed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ **Acceptance tests for \`${service}\` PASSED**\n\n` +
+                    `Triggered by: @${context.actor}\n` +
+                    `Run details: [View workflow run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+            });
+
+      - name: Update status and comment on failure
+        if: failure() && steps.check-permission.outputs.has-permission == 'true' && steps.parse.outputs.service
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const service = '${{ steps.parse.outputs.service }}';
+            const sha = '${{ steps.pr.outputs.sha }}';
+            const validateExists = '${{ steps.validate.outputs.exists }}';
+
+            let description = 'Acceptance tests failed';
+            let commentBody = `❌ **Acceptance tests for \`${service}\` FAILED**\n\n`;
+
+            if (validateExists === 'false') {
+              description = 'Service does not exist';
+              commentBody = `❌ **Service \`${service}\` does not exist**\n\n` +
+                           `Please check the service name and try again.\n\n` +
+                           `Available services can be found in \`stackit/internal/services/\`\n\n`;
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: sha,
+              state: 'failure',
+              context: `acceptance-test/${service}`,
+              description: description,
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+            if (validateExists !== 'false') {
+              commentBody += `Triggered by: @${context.actor}\n` +
+                            `Run details: [View workflow run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });

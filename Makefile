@@ -57,3 +57,20 @@ test-acceptance-tf:
 	TF_ACC_REGION=$(TF_ACC_REGION) \
 	go test ./... -count=1 -timeout=30m && \
 	cd $(ROOT_DIR)
+
+test-acceptance-service:
+	@if [ -z $(SERVICE) ]; then echo "Input SERVICE missing (e.g., SERVICE=mariadb)"; exit 1; fi
+	@if [ -z $(TF_ACC_PROJECT_ID) ]; then echo "Input TF_ACC_PROJECT_ID missing"; exit 1; fi
+	@if [ -z $(TF_ACC_ORGANIZATION_ID) ]; then echo "Input TF_ACC_ORGANIZATION_ID missing"; exit 1; fi
+	@if [ -z $(TF_ACC_REGION) ]; then echo "Input TF_ACC_REGION missing"; exit 1; fi
+	@if [ ! -d $(ROOT_DIR)/stackit/internal/services/$(SERVICE) ]; then \
+		echo "Service '$(SERVICE)' does not exist"; \
+		exit 1; \
+	fi
+	@echo "Running acceptance tests for service: $(SERVICE)"
+	@cd $(ROOT_DIR)/stackit && TF_ACC=1 \
+	TF_ACC_PROJECT_ID=$(TF_ACC_PROJECT_ID) \
+	TF_ACC_ORGANIZATION_ID=$(TF_ACC_ORGANIZATION_ID) \
+	TF_ACC_REGION=$(TF_ACC_REGION) \
+	go test ./internal/services/$(SERVICE)/... -count=1 -timeout=30m && \
+	cd $(ROOT_DIR)
