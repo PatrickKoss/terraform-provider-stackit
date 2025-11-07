@@ -325,6 +325,12 @@ func (r *recordSetResource) Read(
 	ctx = tflog.SetField(ctx, "zone_id", zoneId)
 	ctx = tflog.SetField(ctx, "record_set_id", recordSetId)
 
+	if recordSetId == "" || zoneId == "" || projectId == "" {
+		tflog.Info(ctx, "Record set ID, zone ID, or project ID is empty, removing resource")
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	recordSetResp, err := r.client.GetRecordSet(ctx, projectId, zoneId, recordSetId).Execute()
 	if err != nil {
 		core.LogAndAddError(

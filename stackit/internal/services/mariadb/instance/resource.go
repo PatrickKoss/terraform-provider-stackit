@@ -396,6 +396,7 @@ func (r *instanceResource) Read(ctx context.Context, req resource.ReadRequest, r
 	instanceId := model.InstanceId.ValueString()
 
 	if instanceId == "" {
+		tflog.Info(ctx, "Instance ID is empty, removing resource")
 		resp.State.RemoveResource(ctx)
 		return
 	}

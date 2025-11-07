@@ -403,6 +403,12 @@ func (r *zoneResource) Read(
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	ctx = tflog.SetField(ctx, "zone_id", zoneId)
 
+	if zoneId == "" {
+		tflog.Info(ctx, "Zone ID is empty, removing resource")
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	zoneResp, err := r.client.GetZone(ctx, projectId, zoneId).Execute()
 	if err != nil {
 		core.LogAndAddError(
