@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"os"
 	"strings"
 
 	dnsUtils "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/dns/utils"
@@ -341,7 +340,7 @@ func (r *zoneResource) Create(
 		return
 	}
 
-	if !shouldWait() {
+	if !utils.ShouldWait() {
 		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
@@ -449,11 +448,6 @@ func setModelToNull(model *Model) {
 	}
 }
 
-func shouldWait() bool {
-	v := os.Getenv("STACKIT_TF_WAIT_FOR_READY")
-	return v == "" || strings.EqualFold(v, "true")
-}
-
 // Read refreshes the Terraform state with the latest data.
 func (r *zoneResource) Read(
 	ctx context.Context,
@@ -555,6 +549,12 @@ func (r *zoneResource) Update(
 		)
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	waitResp, err := wait.PartialUpdateZoneWaitHandler(ctx, r.client, projectId, zoneId).
 		WaitWithContext(ctx)
 	if err != nil {
@@ -625,6 +625,12 @@ func (r *zoneResource) Delete(
 		)
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteZoneWaitHandler(ctx, r.client, projectId, zoneId).WaitWithContext(ctx)
 	if err != nil {
 		core.LogAndAddError(

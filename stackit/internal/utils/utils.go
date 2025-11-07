@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -293,4 +294,14 @@ func SetModelFieldsToNull(ctx context.Context, model any) error {
 	}
 
 	return nil
+}
+
+// ShouldWait checks the STACKIT_TF_WAIT_FOR_READY environment variable to determine
+// if the provider should wait for resources to be ready after creation/update.
+// Returns true if the variable is unset or set to "true" (case-insensitive).
+// Returns false if the variable is set to any other value.
+// This is typically used to skip waiting in async mode for Crossplane/Upjet.
+func ShouldWait() bool {
+	v := os.Getenv("STACKIT_TF_WAIT_FOR_READY")
+	return v == "" || strings.EqualFold(v, "true")
 }

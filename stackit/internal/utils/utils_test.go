@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -840,6 +841,102 @@ func TestSetModelFieldsToNull_Errors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantError) {
 				t.Errorf("expected error containing %q, got %q", tt.wantError, err.Error())
+			}
+		})
+	}
+}
+
+func TestShouldWait(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		setEnv   bool
+		expected bool
+	}{
+		{
+			name:     "env not set - should wait",
+			setEnv:   false,
+			expected: true,
+		},
+		{
+			name:     "env set to empty string - should wait",
+			envValue: "",
+			setEnv:   true,
+			expected: true,
+		},
+		{
+			name:     "env set to 'true' - should wait",
+			envValue: "true",
+			setEnv:   true,
+			expected: true,
+		},
+		{
+			name:     "env set to 'TRUE' - should wait (case insensitive)",
+			envValue: "TRUE",
+			setEnv:   true,
+			expected: true,
+		},
+		{
+			name:     "env set to 'True' - should wait (case insensitive)",
+			envValue: "True",
+			setEnv:   true,
+			expected: true,
+		},
+		{
+			name:     "env set to 'false' - should not wait",
+			envValue: "false",
+			setEnv:   true,
+			expected: false,
+		},
+		{
+			name:     "env set to 'FALSE' - should not wait",
+			envValue: "FALSE",
+			setEnv:   true,
+			expected: false,
+		},
+		{
+			name:     "env set to '0' - should not wait",
+			envValue: "0",
+			setEnv:   true,
+			expected: false,
+		},
+		{
+			name:     "env set to 'no' - should not wait",
+			envValue: "no",
+			setEnv:   true,
+			expected: false,
+		},
+		{
+			name:     "env set to random value - should not wait",
+			envValue: "random",
+			setEnv:   true,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save original env value
+			originalValue, wasSet := os.LookupEnv("STACKIT_TF_WAIT_FOR_READY")
+			defer func() {
+				if wasSet {
+					os.Setenv("STACKIT_TF_WAIT_FOR_READY", originalValue)
+				} else {
+					os.Unsetenv("STACKIT_TF_WAIT_FOR_READY")
+				}
+			}()
+
+			// Set up test environment
+			if tt.setEnv {
+				os.Setenv("STACKIT_TF_WAIT_FOR_READY", tt.envValue)
+			} else {
+				os.Unsetenv("STACKIT_TF_WAIT_FOR_READY")
+			}
+
+			// Test
+			result := ShouldWait()
+			if result != tt.expected {
+				t.Errorf("ShouldWait() = %v, want %v", result, tt.expected)
 			}
 		})
 	}

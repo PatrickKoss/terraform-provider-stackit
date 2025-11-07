@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/utils"
@@ -350,7 +349,7 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	if !shouldWait() {
+	if !utils.ShouldWait() {
 		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
@@ -377,11 +376,6 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 	}
 
 	tflog.Info(ctx, "MariaDB instance created")
-}
-
-func shouldWait() bool {
-	v := os.Getenv("STACKIT_TF_WAIT_FOR_READY")
-	return v == "" || strings.EqualFold(v, "true")
 }
 
 // Read refreshes the Terraform state with the latest data.
@@ -480,6 +474,11 @@ func (r *instanceResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	// Wait for update to complete
 	waitResp, err := wait.PartialUpdateInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
@@ -526,6 +525,11 @@ func (r *instanceResource) Delete(ctx context.Context, req resource.DeleteReques
 			return
 		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting instance", fmt.Sprintf("Calling API: %v", err))
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 

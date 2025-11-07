@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
@@ -266,7 +265,7 @@ func (r *recordSetResource) Create(
 		return
 	}
 
-	if !shouldWait() {
+	if !utils.ShouldWait() {
 		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
@@ -304,11 +303,6 @@ func (r *recordSetResource) Create(
 		return
 	}
 	tflog.Info(ctx, "DNS record set created")
-}
-
-func shouldWait() bool {
-	v := os.Getenv("STACKIT_TF_WAIT_FOR_READY")
-	return v == "" || strings.EqualFold(v, "true")
 }
 
 // Read refreshes the Terraform state with the latest data.
@@ -413,6 +407,12 @@ func (r *recordSetResource) Update(
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating record set", err.Error())
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	waitResp, err := wait.PartialUpdateRecordSetWaitHandler(ctx, r.client, projectId, zoneId, recordSetId).
 		WaitWithContext(ctx)
 	if err != nil {
@@ -485,6 +485,12 @@ func (r *recordSetResource) Delete(
 		)
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteRecordSetWaitHandler(ctx, r.client, projectId, zoneId, recordSetId).
 		WaitWithContext(ctx)
 	if err != nil {
