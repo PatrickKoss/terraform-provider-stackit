@@ -332,13 +332,12 @@ func (r *zoneResource) Create(
 	}
 
 	// Save minimal state immediately after API call succeeds to ensure idempotency
+	setModelToNull(&model)
 	zoneId := *createResp.Zone.Id
-	utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]interface{}{
-		"project_id": projectId,
-		"zone_id":    zoneId,
-		"id":         utils.BuildInternalTerraformId(projectId, zoneId),
-	})
-	if resp.Diagnostics.HasError() {
+	model.ZoneId = types.StringValue(zoneId)
+	model.Id = utils.BuildInternalTerraformId(projectId, zoneId)
+	diags := resp.State.Set(ctx, model)
+	if diags.HasError() {
 		return
 	}
 
@@ -379,6 +378,75 @@ func (r *zoneResource) Create(
 		return
 	}
 	tflog.Info(ctx, "DNS zone created")
+}
+
+func setModelToNull(model *Model) {
+	if model.Id.IsUnknown() || model.Id.IsNull() {
+		model.Id = types.StringNull()
+	}
+	if model.ZoneId.IsUnknown() || model.ZoneId.IsNull() {
+		model.ZoneId = types.StringNull()
+	}
+	if model.ProjectId.IsUnknown() || model.ProjectId.IsNull() {
+		model.ProjectId = types.StringNull()
+	}
+	if model.Name.IsUnknown() || model.Name.IsNull() {
+		model.Name = types.StringNull()
+	}
+	if model.DnsName.IsUnknown() || model.DnsName.IsNull() {
+		model.DnsName = types.StringNull()
+	}
+	if model.Description.IsUnknown() || model.Description.IsNull() {
+		model.Description = types.StringNull()
+	}
+	if model.Acl.IsUnknown() || model.Acl.IsNull() {
+		model.Acl = types.StringNull()
+	}
+	if model.Active.IsUnknown() || model.Active.IsNull() {
+		model.Active = types.BoolNull()
+	}
+	if model.ContactEmail.IsUnknown() || model.ContactEmail.IsNull() {
+		model.ContactEmail = types.StringNull()
+	}
+	if model.DefaultTTL.IsUnknown() || model.DefaultTTL.IsNull() {
+		model.DefaultTTL = types.Int64Null()
+	}
+	if model.ExpireTime.IsUnknown() || model.ExpireTime.IsNull() {
+		model.ExpireTime = types.Int64Null()
+	}
+	if model.IsReverseZone.IsUnknown() || model.IsReverseZone.IsNull() {
+		model.IsReverseZone = types.BoolNull()
+	}
+	if model.NegativeCache.IsUnknown() || model.NegativeCache.IsNull() {
+		model.NegativeCache = types.Int64Null()
+	}
+	if model.PrimaryNameServer.IsUnknown() || model.PrimaryNameServer.IsNull() {
+		model.PrimaryNameServer = types.StringNull()
+	}
+	if model.Primaries.IsUnknown() || model.Primaries.IsNull() {
+		model.Primaries = types.ListNull(types.StringType)
+	}
+	if model.RecordCount.IsUnknown() || model.RecordCount.IsNull() {
+		model.RecordCount = types.Int64Null()
+	}
+	if model.RefreshTime.IsUnknown() || model.RefreshTime.IsNull() {
+		model.RefreshTime = types.Int64Null()
+	}
+	if model.RetryTime.IsUnknown() || model.RetryTime.IsNull() {
+		model.RetryTime = types.Int64Null()
+	}
+	if model.SerialNumber.IsUnknown() || model.SerialNumber.IsNull() {
+		model.SerialNumber = types.Int64Null()
+	}
+	if model.Type.IsUnknown() || model.Type.IsNull() {
+		model.Type = types.StringNull()
+	}
+	if model.Visibility.IsUnknown() || model.Visibility.IsNull() {
+		model.Visibility = types.StringNull()
+	}
+	if model.State.IsUnknown() || model.State.IsNull() {
+		model.State = types.StringNull()
+	}
 }
 
 func shouldWait() bool {

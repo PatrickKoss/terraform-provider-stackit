@@ -218,7 +218,7 @@ func (r *recordSetResource) Create(
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
+	
 	projectId := model.ProjectId.ValueString()
 	zoneId := model.ZoneId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
@@ -250,13 +250,12 @@ func (r *recordSetResource) Create(
 	}
 
 	// Write id attributes to state before polling via the wait handler - just in case anything goes wrong during the wait handler
+	setModelToNull(&model)
 	recordSetId := *recordSetResp.Rrset.Id
-	utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]any{
-		"id":            utils.BuildInternalTerraformId(projectId, zoneId, recordSetId),
-		"project_id":    projectId,
-		"zone_id":       zoneId,
-		"record_set_id": recordSetId,
-	})
+	model.RecordSetId = types.StringValue(recordSetId)
+	model.Id = utils.BuildInternalTerraformId(projectId, zoneId, recordSetId)
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -299,6 +298,48 @@ func (r *recordSetResource) Create(
 		return
 	}
 	tflog.Info(ctx, "DNS record set created")
+}
+
+func setModelToNull(model *Model) {
+	if model.Id.IsUnknown() || model.Id.IsNull() {
+		model.Id = types.StringNull()
+	}
+	if model.RecordSetId.IsUnknown() || model.RecordSetId.IsNull() {
+		model.RecordSetId = types.StringNull()
+	}
+	if model.ZoneId.IsUnknown() || model.ZoneId.IsNull() {
+		model.ZoneId = types.StringNull()
+	}
+	if model.ProjectId.IsUnknown() || model.ProjectId.IsNull() {
+		model.ProjectId = types.StringNull()
+	}
+	if model.Active.IsUnknown() || model.Active.IsNull() {
+		model.Active = types.BoolNull()
+	}
+	if model.Comment.IsUnknown() || model.Comment.IsNull() {
+		model.Comment = types.StringNull()
+	}
+	if model.Name.IsUnknown() || model.Name.IsNull() {
+		model.Name = types.StringNull()
+	}
+	if model.Records.IsUnknown() || model.Records.IsNull() {
+		model.Records = types.ListNull(types.StringType)
+	}
+	if model.TTL.IsUnknown() || model.TTL.IsNull() {
+		model.TTL = types.Int64Null()
+	}
+	if model.Type.IsUnknown() || model.Type.IsNull() {
+		model.Type = types.StringNull()
+	}
+	if model.Error.IsUnknown() || model.Error.IsNull() {
+		model.Error = types.StringNull()
+	}
+	if model.State.IsUnknown() || model.State.IsNull() {
+		model.State = types.StringNull()
+	}
+	if model.FQDN.IsUnknown() || model.FQDN.IsNull() {
+		model.FQDN = types.StringNull()
+	}
 }
 
 func shouldWait() bool {
