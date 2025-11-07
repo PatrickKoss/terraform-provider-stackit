@@ -207,9 +207,18 @@ func (r *customDomainResource) Create(ctx context.Context, req resource.CreateRe
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN custom domain", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	model.ID = utils.BuildInternalTerraformId(projectId, distributionId, name)
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	_, err = wait.CreateCDNCustomDomainWaitHandler(ctx, r.client, projectId, distributionId, name).SetTimeout(5 * time.Minute).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN custom domain", fmt.Sprintf("Waiting for create: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN custom domain", fmt.Sprintf("Custom domain creation waiting: %v. The custom domain was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
 		return
 	}
 
@@ -253,7 +262,7 @@ func (r *customDomainResource) Read(ctx context.Context, req resource.ReadReques
 		var oapiErr *oapierror.GenericOpenAPIError
 		// n.b. err is caught here if of type *oapierror.GenericOpenAPIError, which the stackit SDK client returns
 		if errors.As(err, &oapiErr) {
-			if oapiErr.StatusCode == http.StatusNotFound {
+			if oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone {
 				resp.State.RemoveResource(ctx)
 				return
 			}
@@ -308,7 +317,7 @@ func (r *customDomainResource) Update(ctx context.Context, req resource.UpdateRe
 
 	_, err = wait.CreateCDNCustomDomainWaitHandler(ctx, r.client, projectId, distributionId, name).SetTimeout(5 * time.Minute).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating CDN custom domain certificate", fmt.Sprintf("Waiting for update: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating CDN custom domain certificate", fmt.Sprintf("Custom domain update waiting: %v. The update was triggered but may not be complete. Run 'terraform refresh' to check the current state.", err))
 		return
 	}
 
@@ -347,11 +356,20 @@ func (r *customDomainResource) Delete(ctx context.Context, req resource.DeleteRe
 
 	_, err := r.client.DeleteCustomDomain(ctx, projectId, distributionId, name).Execute()
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Delete CDN custom domain", fmt.Sprintf("Delete custom domain: %v", err))
+		// If custom domain is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		if errors.As(err, &oapiErr) {
+			if oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone {
+				tflog.Info(ctx, "Custom domain already deleted")
+				return
+			}
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN custom domain", fmt.Sprintf("Calling API: %v", err))
+		return
 	}
 	_, err = wait.DeleteCDNCustomDomainWaitHandler(ctx, r.client, projectId, distributionId, name).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Delete CDN custom domain", fmt.Sprintf("Waiting for deletion: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN custom domain", fmt.Sprintf("Custom domain deletion waiting: %v. The custom domain deletion was triggered but confirmation timed out. The custom domain may still be deleting. Check the STACKIT Portal or retry the operation.", err))
 		return
 	}
 	tflog.Info(ctx, "CDN custom domain deleted")
