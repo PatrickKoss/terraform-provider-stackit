@@ -32,7 +32,7 @@ func NewCredentialDataSource() datasource.DataSource {
 
 // credentialDataSource is the data source implementation.
 type credentialDataSource struct {
-	client *mariadb.APIClient
+	client mariadb.DefaultApi
 }
 
 // Metadata returns the data source type name.

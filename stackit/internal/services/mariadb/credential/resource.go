@@ -54,7 +54,7 @@ func NewCredentialResource() resource.Resource {
 
 // credentialResource is the resource implementation.
 type credentialResource struct {
-	client *mariadb.APIClient
+	client mariadb.DefaultApi
 }
 
 // Metadata returns the resource type name.

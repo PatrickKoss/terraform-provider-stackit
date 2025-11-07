@@ -32,7 +32,7 @@ func NewInstanceDataSource() datasource.DataSource {
 
 // instanceDataSource is the data source implementation.
 type instanceDataSource struct {
-	client *mariadb.APIClient
+	client mariadb.DefaultApi
 }
 
 // Metadata returns the data source type name.

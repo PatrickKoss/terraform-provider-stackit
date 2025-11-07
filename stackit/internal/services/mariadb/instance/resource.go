@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/utils"
@@ -84,7 +85,7 @@ func NewInstanceResource() resource.Resource {
 
 // instanceResource is the resource implementation.
 type instanceResource struct {
-	client *mariadb.APIClient
+	client mariadb.DefaultApi
 }
 
 // Metadata returns the resource type name.
@@ -317,18 +318,47 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 	ctx = tflog.SetField(ctx, "instance_id", instanceId)
 
 	// This ensures that if wait fails or context is canceled, Terraform still knows about the instance
+	// utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]interface{}{
+	// 	"project_id":  projectId,
+	// 	"instance_id": instanceId,
+	// 	"id":          utils.BuildInternalTerraformId(model.ProjectId.ValueString(), instanceId),
+	// })
+	/*if resp.Diagnostics.HasError() {
+		return
+	}*/
 	model.InstanceId = types.StringValue(instanceId)
-	model.Id = types.StringValue(fmt.Sprintf("%s,%s", projectId, instanceId))
+	model.Id = utils.BuildInternalTerraformId(model.ProjectId.ValueString(), instanceId)
+	// IMPORTANT: For all computed fields we *don't* know yet, we must not
+	// leave them as "Unknown" after apply. Terraform forbids Unknowns
+	// after Create/Update; use Null instead.
+	model.CfGuid = types.StringNull()
+	model.CfSpaceGuid = types.StringNull()
+	model.CfOrganizationGuid = types.StringNull()
+	model.DashboardUrl = types.StringNull()
+	model.ImageUrl = types.StringNull()
+	model.PlanId = types.StringNull()
+
+	// Optional+Computed "parameters" is also Unknown in the plan when the
+	// user doesn't set it. Make it a Null object instead.
+	if model.Parameters.IsUnknown() {
+		attrTypes := model.Parameters.AttributeTypes(ctx)
+		model.Parameters = types.ObjectNull(attrTypes)
+	}
+
 	diags = resp.State.Set(ctx, model)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	if diags.HasError() {
+		return
+	}
+
+	if !shouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
 	// Wait for instance to be ready
 	waitResp, err := wait.CreateInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating instance", fmt.Sprintf("Instance creation waiting: %v. The instance was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating instance", fmt.Sprintf("Instance creation waiting: %v", err))
 		return
 	}
 
@@ -345,7 +375,13 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
 	tflog.Info(ctx, "MariaDB instance created")
+}
+
+func shouldWait() bool {
+	v := os.Getenv("STACKIT_TF_WAIT_FOR_READY")
+	return v == "" || strings.EqualFold(v, "true")
 }
 
 // Read refreshes the Terraform state with the latest data.
@@ -358,6 +394,12 @@ func (r *instanceResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 	projectId := model.ProjectId.ValueString()
 	instanceId := model.InstanceId.ValueString()
+
+	if instanceId == "" {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	ctx = tflog.SetField(ctx, "instance_id", instanceId)
 
@@ -736,7 +778,7 @@ func (r *instanceResource) loadPlanId(ctx context.Context, model *Model) error {
 	return fmt.Errorf("couldn't find plan_name '%s' for version %s, available names are: %s", planName, version, availablePlanNames)
 }
 
-func loadPlanNameAndVersion(ctx context.Context, client *mariadb.APIClient, model *Model) error {
+func loadPlanNameAndVersion(ctx context.Context, client mariadb.DefaultApi, model *Model) error {
 	projectId := model.ProjectId.ValueString()
 	planId := model.PlanId.ValueString()
 	res, err := client.ListOfferings(ctx, projectId).Execute()
