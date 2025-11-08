@@ -271,6 +271,12 @@ func (a *alertGroupResource) Create(ctx context.Context, req resource.CreateRequ
 		}
 	}
 
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating alert group", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
 	// Set the state with fully populated data.
 	diags = resp.State.Set(ctx, model)
 	resp.Diagnostics.Append(diags...)
@@ -292,6 +298,13 @@ func (a *alertGroupResource) Read(ctx context.Context, req resource.ReadRequest,
 	projectId := model.ProjectId.ValueString()
 	instanceId := model.InstanceId.ValueString()
 	alertGroupName := model.Name.ValueString()
+
+	if alertGroupName == "" {
+		tflog.Info(ctx, "Alert group name is empty, removing resource")
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	ctx = tflog.SetField(ctx, "alert_group_name", alertGroupName)
 	ctx = tflog.SetField(ctx, "instance_id", instanceId)
@@ -300,7 +313,7 @@ func (a *alertGroupResource) Read(ctx context.Context, req resource.ReadRequest,
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -346,6 +359,12 @@ func (a *alertGroupResource) Delete(ctx context.Context, req resource.DeleteRequ
 
 	_, err := a.client.DeleteAlertgroup(ctx, alertGroupName, instanceId, projectId).Execute()
 	if err != nil {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Alert group already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting alert group", fmt.Sprintf("Calling API: %v", err))
 		return
 	}

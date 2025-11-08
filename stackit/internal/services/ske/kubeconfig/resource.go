@@ -262,6 +262,13 @@ func (r *kubeconfigResource) Create(ctx context.Context, req resource.CreateRequ
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating kubeconfig", fmt.Sprintf("Creating kubeconfig: %v", err))
 		return
 	}
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating kubeconfig", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
 	// Set state to fully populated data
 	diags = resp.State.Set(ctx, model)
 	resp.Diagnostics.Append(diags...)
@@ -289,6 +296,13 @@ func (r *kubeconfigResource) Read(ctx context.Context, req resource.ReadRequest,
 	clusterName := model.ClusterName.ValueString()
 	kubeconfigUUID := model.KubeconfigId.ValueString()
 	region := r.providerData.GetRegionWithOverride(model.Region)
+
+	if clusterName == "" {
+		tflog.Info(ctx, "Cluster name is empty, removing resource")
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	// Prevent error state when updating to v2 api version and the kubeconfig is expired
 	model.Region = types.StringValue(region)
 	// Prevent recreation of kubeconfig when updating to v2 api version

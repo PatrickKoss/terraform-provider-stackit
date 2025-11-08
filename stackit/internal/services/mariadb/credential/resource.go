@@ -189,9 +189,21 @@ func (r *credentialResource) Create(ctx context.Context, req resource.CreateRequ
 	// Save minimal state immediately to prevent orphaned resources
 	model.CredentialId = types.StringValue(credentialId)
 	model.Id = types.StringValue(fmt.Sprintf("%s,%s,%s", projectId, instanceId, credentialId))
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credential", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
 	diags = resp.State.Set(ctx, model)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
@@ -291,6 +303,11 @@ func (r *credentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 			return
 		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting credential", fmt.Sprintf("Calling API: %v", err))
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 

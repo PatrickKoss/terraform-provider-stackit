@@ -224,6 +224,26 @@ func (r *databaseResource) Create(ctx context.Context, req resource.CreateReques
 	databaseId := *databaseResp.Id
 	ctx = tflog.SetField(ctx, "database_id", databaseId)
 
+	model.DatabaseId = types.StringValue(databaseId)
+	model.Id = utils.BuildInternalTerraformId(model.ProjectId.ValueString(), region, model.InstanceId.ValueString(), databaseId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating database", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	database, err := getDatabase(ctx, r.client, projectId, region, instanceId, databaseId)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating database", fmt.Sprintf("Getting database details after creation: %v", err))
@@ -257,6 +277,13 @@ func (r *databaseResource) Read(ctx context.Context, req resource.ReadRequest, r
 	instanceId := model.InstanceId.ValueString()
 	databaseId := model.DatabaseId.ValueString()
 	region := r.providerData.GetRegionWithOverride(model.Region)
+
+	if databaseId == "" {
+		tflog.Info(ctx, "Database ID is empty, removing resource")
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	ctx = tflog.SetField(ctx, "instance_id", instanceId)
 	ctx = tflog.SetField(ctx, "database_id", databaseId)
@@ -265,7 +292,7 @@ func (r *databaseResource) Read(ctx context.Context, req resource.ReadRequest, r
 	databaseResp, err := getDatabase(ctx, r.client, projectId, region, instanceId, databaseId)
 	if err != nil {
 		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if (ok && oapiErr.StatusCode == http.StatusNotFound) || errors.Is(err, databaseNotFoundErr) {
+		if (ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone)) || errors.Is(err, databaseNotFoundErr) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -317,8 +344,21 @@ func (r *databaseResource) Delete(ctx context.Context, req resource.DeleteReques
 	// Delete existing record set
 	err := r.client.DeleteDatabase(ctx, projectId, region, instanceId, databaseId).Execute()
 	if err != nil {
+		// If database is already gone (404 or 410), treat as success for idempotency
+		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Database already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting database", fmt.Sprintf("Calling API: %v", err))
+		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	tflog.Info(ctx, "Postgres Flex database deleted")
 }
 

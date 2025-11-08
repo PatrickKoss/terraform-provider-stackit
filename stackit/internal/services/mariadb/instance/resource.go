@@ -316,35 +316,17 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 	instanceId := *createResp.InstanceId
 	ctx = tflog.SetField(ctx, "instance_id", instanceId)
 
-	// This ensures that if wait fails or context is canceled, Terraform still knows about the instance
-	// utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]interface{}{
-	// 	"project_id":  projectId,
-	// 	"instance_id": instanceId,
-	// 	"id":          utils.BuildInternalTerraformId(model.ProjectId.ValueString(), instanceId),
-	// })
-	/*if resp.Diagnostics.HasError() {
-		return
-	}*/
 	model.InstanceId = types.StringValue(instanceId)
 	model.Id = utils.BuildInternalTerraformId(model.ProjectId.ValueString(), instanceId)
-	// IMPORTANT: For all computed fields we *don't* know yet, we must not
-	// leave them as "Unknown" after apply. Terraform forbids Unknowns
-	// after Create/Update; use Null instead.
-	model.CfGuid = types.StringNull()
-	model.CfSpaceGuid = types.StringNull()
-	model.CfOrganizationGuid = types.StringNull()
-	model.DashboardUrl = types.StringNull()
-	model.ImageUrl = types.StringNull()
-	model.PlanId = types.StringNull()
 
-	// Optional+Computed "parameters" is also Unknown in the plan when the
-	// user doesn't set it. Make it a Null object instead.
-	if model.Parameters.IsUnknown() {
-		attrTypes := model.Parameters.AttributeTypes(ctx)
-		model.Parameters = types.ObjectNull(attrTypes)
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating instance", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
 	}
 
 	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
 	if diags.HasError() {
 		return
 	}

@@ -202,6 +202,33 @@ func (r *credentialsGroupResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
+	if got == nil || got.CredentialsGroup == nil || got.CredentialsGroup.CredentialsGroupId == nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credentials group", "Got empty credentials group id")
+		return
+	}
+	credentialsGroupId := *got.CredentialsGroup.CredentialsGroupId
+	ctx = tflog.SetField(ctx, "credentials_group_id", credentialsGroupId)
+
+	model.CredentialsGroupId = types.StringValue(credentialsGroupId)
+	model.Id = utils.BuildInternalTerraformId(projectId, region, credentialsGroupId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credentials group", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	// Map response body to schema
 	err = mapFields(got, &model, region)
 	if err != nil {
@@ -227,6 +254,12 @@ func (r *credentialsGroupResource) Read(ctx context.Context, req resource.ReadRe
 	projectId := model.ProjectId.ValueString()
 	credentialsGroupId := model.CredentialsGroupId.ValueString()
 	region := r.providerData.GetRegionWithOverride(model.Region)
+
+	if credentialsGroupId == "" {
+		tflog.Info(ctx, "Credentials group ID is empty, removing resource")
+		resp.State.RemoveResource(ctx)
+		return
+	}
 
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	ctx = tflog.SetField(ctx, "credentials_group_id", credentialsGroupId)
@@ -278,7 +311,18 @@ func (r *credentialsGroupResource) Delete(ctx context.Context, req resource.Dele
 	// Delete existing credentials group
 	_, err := r.client.DeleteCredentialsGroup(ctx, projectId, region, credentialsGroupId).Execute()
 	if err != nil {
+		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Credentials group already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting credentials group", fmt.Sprintf("Calling API: %v", err))
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
 	}
 
 	tflog.Info(ctx, "ObjectStorage credentials group deleted")
