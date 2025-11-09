@@ -526,6 +526,7 @@ The example below creates the supporting infrastructure using the STACKIT Terraf
 					listvalidator.SizeBetween(1, 1),
 				},
 				NestedObject: schema.NestedAttributeObject{
+						// +crossplane:reference:type=stackit_network
 					Attributes: map[string]schema.Attribute{
 						"network_id": schema.StringAttribute{
 							Description: descriptions["network_id"],
@@ -598,6 +599,7 @@ The example below creates the supporting infrastructure using the STACKIT Terraf
 								Description: descriptions["observability_logs"],
 								Optional:    true,
 								Computed:    true,
+								// +crossplane:reference:type=stackit_loadbalancer_observability_credential
 								Attributes: map[string]schema.Attribute{
 									"credentials_ref": schema.StringAttribute{
 										Description: descriptions["observability_logs_credentials_ref"],
@@ -615,6 +617,7 @@ The example below creates the supporting infrastructure using the STACKIT Terraf
 								Description: descriptions["observability_metrics"],
 								Optional:    true,
 								Computed:    true,
+								// +crossplane:reference:type=stackit_loadbalancer_observability_credential
 								Attributes: map[string]schema.Attribute{
 									"credentials_ref": schema.StringAttribute{
 										Description: descriptions["observability_metrics_credentials_ref"],

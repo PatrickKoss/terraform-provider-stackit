@@ -152,6 +152,8 @@ func (r *observabilityCredentialResource) Schema(_ context.Context, _ resource.S
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			// +crossplane:reference:type=stackit_observability_credential
+			// +crossplane:reference:extractor=ExtractObservabilityCredentialUsername
 			"username": schema.StringAttribute{
 				Description: descriptions["username"],
 				Required:    true,
@@ -159,6 +161,8 @@ func (r *observabilityCredentialResource) Schema(_ context.Context, _ resource.S
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			// +crossplane:reference:type=stackit_observability_credential
+			// +crossplane:reference:extractor=ExtractObservabilityCredentialPassword
 			"password": schema.StringAttribute{
 				Description: descriptions["password"],
 				Required:    true,
