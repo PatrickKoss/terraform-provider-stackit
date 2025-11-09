@@ -181,6 +181,7 @@ func (r *credentialResource) Schema(_ context.Context, _ resource.SchemaRequest,
 					validate.NoSeparator(),
 				},
 			},
+			// +crossplane:reference:type=stackit_objectstorage_credentials_group
 			"credentials_group_id": schema.StringAttribute{
 				Description: descriptions["credentials_group_id"],
 				Required:    true,
