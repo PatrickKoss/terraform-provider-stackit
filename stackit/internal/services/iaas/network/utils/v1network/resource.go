@@ -2,6 +2,7 @@ package v1network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -49,7 +50,28 @@ func Create(ctx context.Context, req resource.CreateRequest, resp *resource.Crea
 		return
 	}
 
+	// Save minimal state immediately after API call succeeds to ensure idempotency
 	networkId := *network.NetworkId
+	model.NetworkId = types.StringValue(networkId)
+	model.Id = utils.BuildInternalTerraformId(projectId, networkId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating network", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = resp.State.Set(ctx, model)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	network, err = wait.CreateNetworkWaitHandler(ctx, client, projectId, networkId).WaitWithContext(ctx)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating network", fmt.Sprintf("Network creation waiting: %v", err))
@@ -87,8 +109,9 @@ func Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResp
 
 	networkResp, err := client.GetNetwork(ctx, projectId, networkId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -144,6 +167,12 @@ func Update(ctx context.Context, req resource.UpdateRequest, resp *resource.Upda
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating network", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	waitResp, err := wait.UpdateNetworkWaitHandler(ctx, client, projectId, networkId).WaitWithContext(ctx)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating network", fmt.Sprintf("Network update waiting: %v", err))
@@ -180,9 +209,23 @@ func Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.Dele
 	// Delete existing network
 	err := client.DeleteNetwork(ctx, projectId, networkId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Network already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting network", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteNetworkWaitHandler(ctx, client, projectId, networkId).WaitWithContext(ctx)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting network", fmt.Sprintf("Network deletion waiting: %v", err))
