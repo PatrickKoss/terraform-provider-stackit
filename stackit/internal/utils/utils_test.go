@@ -255,39 +255,6 @@ func TestSimplifyBackupSchedule(t *testing.T) {
 	}
 }
 
-func TestSupportedValuesDocumentation(t *testing.T) {
-	tests := []struct {
-		description string
-		values      []string
-		expected    string
-	}{
-		{
-			"empty values",
-			[]string{},
-			"",
-		},
-		{
-			"single value",
-			[]string{"value"},
-			"Supported values are: `value`.",
-		},
-		{
-			"multiple values",
-			[]string{"value1", "value2", "value3"},
-			"Supported values are: `value1`, `value2`, `value3`.",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.description, func(t *testing.T) {
-			output := SupportedValuesDocumentation(tt.values)
-			if output != tt.expected {
-				t.Fatalf("Data does not match: %s", output)
-			}
-		})
-	}
-}
-
 func TestIsLegacyProjectRole(t *testing.T) {
 	tests := []struct {
 		description string
@@ -920,17 +887,17 @@ func TestShouldWait(t *testing.T) {
 			originalValue, wasSet := os.LookupEnv("STACKIT_TF_WAIT_FOR_READY")
 			defer func() {
 				if wasSet {
-					os.Setenv("STACKIT_TF_WAIT_FOR_READY", originalValue)
+					_ = os.Setenv("STACKIT_TF_WAIT_FOR_READY", originalValue)
 				} else {
-					os.Unsetenv("STACKIT_TF_WAIT_FOR_READY")
+					_ = os.Unsetenv("STACKIT_TF_WAIT_FOR_READY")
 				}
 			}()
 
 			// Set up test environment
 			if tt.setEnv {
-				os.Setenv("STACKIT_TF_WAIT_FOR_READY", tt.envValue)
+				_ = os.Setenv("STACKIT_TF_WAIT_FOR_READY", tt.envValue)
 			} else {
-				os.Unsetenv("STACKIT_TF_WAIT_FOR_READY")
+				_ = os.Unsetenv("STACKIT_TF_WAIT_FOR_READY")
 			}
 
 			// Test
