@@ -938,7 +938,10 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 		}
 
 		// Check first object - age should be null
-		obj1 := elements[0].(types.Object)
+		obj1, ok := elements[0].(types.Object)
+		if !ok {
+			t.Fatalf("expected element 0 to be types.Object, got %T", elements[0])
+		}
 		if !obj1.Attributes()["age"].IsNull() {
 			t.Error("first object's age field should be null")
 		}
@@ -947,7 +950,10 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 		}
 
 		// Check second object - name should be null
-		obj2 := elements[1].(types.Object)
+		obj2, ok := elements[1].(types.Object)
+		if !ok {
+			t.Fatalf("expected element 1 to be types.Object, got %T", elements[1])
+		}
 		if !obj2.Attributes()["name"].IsNull() {
 			t.Error("second object's name field should be null")
 		}
@@ -1005,8 +1011,14 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 		}
 
 		// Navigate to the deep field
-		level2 := input.Level1.Attributes()["level2"].(types.Object)
-		level3 := level2.Attributes()["level3"].(types.Object)
+		level2, ok := input.Level1.Attributes()["level2"].(types.Object)
+		if !ok {
+			t.Fatalf("expected level2 to be types.Object, got %T", input.Level1.Attributes()["level2"])
+		}
+		level3, ok := level2.Attributes()["level3"].(types.Object)
+		if !ok {
+			t.Fatalf("expected level3 to be types.Object, got %T", level2.Attributes()["level3"])
+		}
 		deepField := level3.Attributes()["deep_field"]
 
 		if !deepField.IsNull() {
@@ -1052,14 +1064,20 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 		outerElements := input.OuterList.Elements()
 
 		// Check first inner list
-		innerList1 := outerElements[0].(types.List)
+		innerList1, ok := outerElements[0].(types.List)
+		if !ok {
+			t.Fatalf("expected outerElements[0] to be types.List, got %T", outerElements[0])
+		}
 		innerElements1 := innerList1.Elements()
 		if !innerElements1[1].IsNull() {
 			t.Error("second element of first inner list should be null")
 		}
 
 		// Check second inner list
-		innerList2 := outerElements[1].(types.List)
+		innerList2, ok := outerElements[1].(types.List)
+		if !ok {
+			t.Fatalf("expected outerElements[1] to be types.List, got %T", outerElements[1])
+		}
 		innerElements2 := innerList2.Elements()
 		if !innerElements2[0].IsNull() {
 			t.Error("first element of second inner list should be null")
@@ -1109,7 +1127,10 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 		elements := input.MyMap.Elements()
 
 		// Check key1 object
-		obj1 := elements["key1"].(types.Object)
+		obj1, ok := elements["key1"].(types.Object)
+		if !ok {
+			t.Fatalf("expected elements[\"key1\"] to be types.Object, got %T", elements["key1"])
+		}
 		if !obj1.Attributes()["field2"].IsNull() {
 			t.Error("key1 object's field2 should be null")
 		}
@@ -1118,7 +1139,10 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 		}
 
 		// Check key2 object
-		obj2 := elements["key2"].(types.Object)
+		obj2, ok := elements["key2"].(types.Object)
+		if !ok {
+			t.Fatalf("expected elements[\"key2\"] to be types.Object, got %T", elements["key2"])
+		}
 		if !obj2.Attributes()["field1"].IsNull() {
 			t.Error("key2 object's field1 should be null")
 		}
@@ -1211,7 +1235,10 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 
 		// Check that unknown fields within objects were converted to null
 		for _, elem := range elements {
-			obj := elem.(types.Object)
+			obj, ok := elem.(types.Object)
+			if !ok {
+				t.Fatalf("expected element to be types.Object, got %T", elem)
+			}
 			attrs := obj.Attributes()
 
 			// At least one field in each object should be null (the unknown one)
@@ -1259,9 +1286,15 @@ func TestSetModelFieldsToNull_ComplexStructures(t *testing.T) {
 		}
 
 		elements := input.MyMap.Elements()
-		list := elements["key1"].(types.List)
+		list, ok := elements["key1"].(types.List)
+		if !ok {
+			t.Fatalf("expected elements[\"key1\"] to be types.List, got %T", elements["key1"])
+		}
 		listElements := list.Elements()
-		obj := listElements[0].(types.Object)
+		obj, ok := listElements[0].(types.Object)
+		if !ok {
+			t.Fatalf("expected listElements[0] to be types.Object, got %T", listElements[0])
+		}
 
 		if !obj.Attributes()["prop"].IsNull() {
 			t.Error("prop field should be null after processing")
