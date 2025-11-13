@@ -58,7 +58,7 @@ func NewRecordSetResource() resource.Resource {
 
 // recordSetResource is the resource implementation.
 type recordSetResource struct {
-	client *dns.APIClient
+	client dns.DefaultApi
 }
 
 // Metadata returns the resource type name.

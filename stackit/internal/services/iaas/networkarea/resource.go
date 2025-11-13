@@ -75,7 +75,7 @@ func NewNetworkAreaResource() resource.Resource {
 
 // networkResource is the resource implementation.
 type networkAreaResource struct {
-	client                *iaas.APIClient
+	client iaas.DefaultApi
 	resourceManagerClient *resourcemanager.APIClient
 }
 
@@ -691,7 +691,7 @@ func toNetworkRangesPayload(ctx context.Context, model *Model) (*[]iaas.NetworkR
 }
 
 // updateNetworkRanges creates and deletes network ranges so that network area ranges are the ones in the model
-func updateNetworkRanges(ctx context.Context, organizationId, networkAreaId string, ranges []networkRange, client *iaas.APIClient) error {
+func updateNetworkRanges(ctx context.Context, organizationId, networkAreaId string, ranges []networkRange, client iaas.DefaultApi) error {
 	// Get network ranges current state
 	currentNetworkRangesResp, err := client.ListNetworkAreaRanges(ctx, organizationId, networkAreaId).Execute()
 	if err != nil {

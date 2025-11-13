@@ -31,7 +31,7 @@ func NewPublicIpDataSource() datasource.DataSource {
 
 // publicIpDataSource is the data source implementation.
 type publicIpDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

@@ -28,7 +28,7 @@ func NewKeyPairDataSource() datasource.DataSource {
 
 // keyPairDataSource is the data source implementation.
 type keyPairDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

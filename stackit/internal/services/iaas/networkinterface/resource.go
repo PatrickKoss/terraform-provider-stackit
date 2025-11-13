@@ -59,7 +59,7 @@ func NewNetworkInterfaceResource() resource.Resource {
 
 // networkResource is the resource implementation.
 type networkInterfaceResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // ModifyPlan implements resource.ResourceWithModifyPlan.

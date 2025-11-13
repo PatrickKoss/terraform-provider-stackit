@@ -34,7 +34,7 @@ func NewNetworkAreaDataSource() datasource.DataSource {
 
 // networkDataSource is the data source implementation.
 type networkAreaDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

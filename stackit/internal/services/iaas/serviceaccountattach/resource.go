@@ -46,7 +46,7 @@ func NewServiceAccountAttachResource() resource.Resource {
 
 // networkInterfaceAttachResource is the resource implementation.
 type networkInterfaceAttachResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

@@ -51,7 +51,7 @@ func NewAffinityGroupResource() resource.Resource {
 
 // affinityGroupResource is the resource implementation.
 type affinityGroupResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

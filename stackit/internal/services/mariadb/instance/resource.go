@@ -83,6 +83,9 @@ func NewInstanceResource() resource.Resource {
 }
 
 // instanceResource is the resource implementation.
+//
+//go:generate mockgen -destination=./mock/instance.go -package=mock_instance github.com/stackitcloud/stackit-sdk-go/services/mariadb DefaultApi
+//go:generate mockgen -destination=./mock/requests.go -package=mock_instance github.com/stackitcloud/stackit-sdk-go/services/mariadb ApiListOfferingsRequest,ApiCreateInstanceRequest,ApiGetInstanceRequest,ApiPartialUpdateInstanceRequest,ApiDeleteInstanceRequest
 type instanceResource struct {
 	client mariadb.DefaultApi
 }

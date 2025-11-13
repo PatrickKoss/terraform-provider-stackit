@@ -41,7 +41,7 @@ func NewRoutingTableRoutesDataSource() datasource.DataSource {
 
 // routingTableDataSource is the data source implementation.
 type routingTableRoutesDataSource struct {
-	client       *iaasalpha.APIClient
+	client iaasalpha.DefaultApi
 	providerData core.ProviderData
 }
 

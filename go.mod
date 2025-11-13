@@ -38,13 +38,18 @@ require (
 	github.com/stackitcloud/stackit-sdk-go/services/serviceenablement v1.2.2
 	github.com/stackitcloud/stackit-sdk-go/services/ske v1.4.0
 	github.com/stackitcloud/stackit-sdk-go/services/sqlserverflex v1.3.1
+	github.com/stretchr/testify v1.10.0
 	github.com/teambition/rrule-go v1.8.2
+	go.uber.org/mock v0.6.0
 	golang.org/x/mod v0.30.0
 )
 
 require (
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.7 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	golang.org/x/telemetry v0.0.0-20251008203120-078029d740a8 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (

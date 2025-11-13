@@ -52,10 +52,13 @@ func NewNetworkResource() resource.Resource {
 }
 
 // networkResource is the resource implementation.
+//
+//go:generate mockgen -destination=./mock/instance.go -package=mock_network github.com/stackitcloud/stackit-sdk-go/services/iaasalpha DefaultApi
+//go:generate mockgen -destination=./mock/instance.go -package=mock_network github.com/stackitcloud/stackit-sdk-go/services/iaas DefaultApi
 type networkResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 	// alphaClient will be used in case the experimental flag "network" is set
-	alphaClient    *iaasalpha.APIClient
+	alphaClient    iaasalpha.DefaultApi
 	isExperimental bool
 	providerData   core.ProviderData
 }

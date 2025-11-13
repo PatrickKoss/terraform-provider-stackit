@@ -31,7 +31,7 @@ func NewVolumeDataSource() datasource.DataSource {
 
 // volumeDataSource is the data source implementation.
 type volumeDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

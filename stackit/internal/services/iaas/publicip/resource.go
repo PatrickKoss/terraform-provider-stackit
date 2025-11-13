@@ -48,7 +48,7 @@ func NewPublicIpResource() resource.Resource {
 
 // publicIpResource is the resource implementation.
 type publicIpResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

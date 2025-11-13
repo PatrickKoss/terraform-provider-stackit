@@ -755,7 +755,7 @@ func testAccCheckDestroy(s *terraform.State) error {
 
 func testAccCheckRoutingTableDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaasalpha.APIClient
+	var client iaasalpha.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaasalpha.NewAPIClient()
@@ -793,7 +793,7 @@ func testAccCheckRoutingTableDestroy(s *terraform.State) error {
 
 func testAccCheckRoutingTableRouteDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaasalpha.APIClient
+	var client iaasalpha.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaasalpha.NewAPIClient()

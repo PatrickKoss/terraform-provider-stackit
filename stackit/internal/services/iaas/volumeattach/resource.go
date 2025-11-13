@@ -48,7 +48,7 @@ func NewVolumeAttachResource() resource.Resource {
 
 // volumeAttachResource is the resource implementation.
 type volumeAttachResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

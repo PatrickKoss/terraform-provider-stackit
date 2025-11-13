@@ -31,7 +31,7 @@ func NewRecordSetDataSource() datasource.DataSource {
 
 // recordSetDataSource is the data source implementation.
 type recordSetDataSource struct {
-	client *dns.APIClient
+	client dns.DefaultApi
 }
 
 // Metadata returns the data source type name.

@@ -33,7 +33,7 @@ func NewAffinityGroupDatasource() datasource.DataSource {
 }
 
 type affinityGroupDatasource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 func (d *affinityGroupDatasource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {

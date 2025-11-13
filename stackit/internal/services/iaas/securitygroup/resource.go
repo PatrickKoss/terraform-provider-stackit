@@ -52,7 +52,7 @@ func NewSecurityGroupResource() resource.Resource {
 
 // securityGroupResource is the resource implementation.
 type securityGroupResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

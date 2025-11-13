@@ -58,7 +58,7 @@ func NewServerDataSource() datasource.DataSource {
 
 // serverDataSource is the data source implementation.
 type serverDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

@@ -30,7 +30,7 @@ func NewSecurityGroupRuleDataSource() datasource.DataSource {
 
 // securityGroupRuleDataSource is the data source implementation.
 type securityGroupRuleDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

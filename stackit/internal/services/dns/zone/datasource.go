@@ -33,7 +33,7 @@ func NewZoneDataSource() datasource.DataSource {
 
 // zoneDataSource is the data source implementation.
 type zoneDataSource struct {
-	client *dns.APIClient
+	client dns.DefaultApi
 }
 
 // Metadata returns the data source type name.

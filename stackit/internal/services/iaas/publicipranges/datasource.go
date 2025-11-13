@@ -35,7 +35,7 @@ func NewPublicIpRangesDataSource() datasource.DataSource {
 
 // publicIpRangesDataSource is the data source implementation.
 type publicIpRangesDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 type Model struct {

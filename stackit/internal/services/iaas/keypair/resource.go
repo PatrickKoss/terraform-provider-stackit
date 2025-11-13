@@ -43,7 +43,7 @@ func NewKeyPairResource() resource.Resource {
 
 // keyPairResource is the resource implementation.
 type keyPairResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

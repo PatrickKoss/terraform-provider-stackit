@@ -34,9 +34,9 @@ func NewNetworkDataSource() datasource.DataSource {
 
 // networkDataSource is the data source implementation.
 type networkDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 	// alphaClient will be used in case the experimental flag "network" is set
-	alphaClient    *iaasalpha.APIClient
+	alphaClient    iaasalpha.DefaultApi
 	isExperimental bool
 	providerData   core.ProviderData
 }

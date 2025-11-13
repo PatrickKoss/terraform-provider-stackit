@@ -41,7 +41,7 @@ func NewRoutingTableRouteResource() resource.Resource {
 
 // routeResource is the resource implementation.
 type routeResource struct {
-	client       *iaasalpha.APIClient
+	client iaasalpha.DefaultApi
 	providerData core.ProviderData
 }
 

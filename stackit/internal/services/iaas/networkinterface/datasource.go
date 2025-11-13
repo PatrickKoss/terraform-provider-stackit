@@ -31,7 +31,7 @@ func NewNetworkInterfaceDataSource() datasource.DataSource {
 
 // networkInterfaceDataSource is the data source implementation.
 type networkInterfaceDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

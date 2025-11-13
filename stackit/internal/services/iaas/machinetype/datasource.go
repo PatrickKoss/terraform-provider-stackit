@@ -44,7 +44,7 @@ func NewMachineTypeDataSource() datasource.DataSource {
 }
 
 type machineTypeDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 func (d *machineTypeDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {

@@ -100,7 +100,7 @@ func NewServerResource() resource.Resource {
 
 // serverResource is the resource implementation.
 type serverResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

@@ -4287,7 +4287,7 @@ func testAccCheckDestroy(s *terraform.State) error {
 
 func testAccCheckNetworkV1Destroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4372,7 +4372,7 @@ func testAccCheckNetworkV2Destroy(s *terraform.State) error {
 
 func testAccCheckNetworkInterfaceDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4416,7 +4416,7 @@ func testAccCheckNetworkInterfaceDestroy(s *terraform.State) error {
 
 func testAccCheckNetworkAreaDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4463,7 +4463,7 @@ func testAccCheckNetworkAreaDestroy(s *terraform.State) error {
 
 func testAccCheckIaaSVolumeDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4511,7 +4511,7 @@ func testAccCheckIaaSVolumeDestroy(s *terraform.State) error {
 func testAccCheckServerDestroy(s *terraform.State) error {
 	ctx := context.Background()
 	var alphaClient *iaas.APIClient
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	var alphaErr error
 	if testutil.IaaSCustomEndpoint == "" {
@@ -4598,7 +4598,7 @@ func testAccCheckServerDestroy(s *terraform.State) error {
 
 func testAccCheckAffinityGroupDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4645,7 +4645,7 @@ func testAccCheckAffinityGroupDestroy(s *terraform.State) error {
 
 func testAccCheckIaaSSecurityGroupDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4692,7 +4692,7 @@ func testAccCheckIaaSSecurityGroupDestroy(s *terraform.State) error {
 
 func testAccCheckIaaSPublicIpDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4739,7 +4739,7 @@ func testAccCheckIaaSPublicIpDestroy(s *terraform.State) error {
 
 func testAccCheckIaaSKeyPairDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 	if testutil.IaaSCustomEndpoint == "" {
 		client, err = iaas.NewAPIClient(
@@ -4785,7 +4785,7 @@ func testAccCheckIaaSKeyPairDestroy(s *terraform.State) error {
 
 func testAccCheckIaaSImageDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *iaas.APIClient
+	var client iaas.DefaultApi
 	var err error
 
 	if testutil.IaaSCustomEndpoint == "" {

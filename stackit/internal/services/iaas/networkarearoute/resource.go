@@ -49,7 +49,7 @@ func NewNetworkAreaRouteResource() resource.Resource {
 
 // networkResource is the resource implementation.
 type networkAreaRouteResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.

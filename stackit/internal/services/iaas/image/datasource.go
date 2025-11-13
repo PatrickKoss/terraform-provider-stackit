@@ -49,7 +49,7 @@ func NewImageDataSource() datasource.DataSource {
 
 // imageDataSource is the data source implementation.
 type imageDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

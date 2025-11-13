@@ -11,7 +11,7 @@ import (
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/utils"
 )
 
-func ConfigureClient(ctx context.Context, providerData *core.ProviderData, diags *diag.Diagnostics) *iaasalpha.APIClient {
+func ConfigureClient(ctx context.Context, providerData *core.ProviderData, diags *diag.Diagnostics) iaasalpha.DefaultApi {
 	apiClientConfigOptions := []config.ConfigurationOption{
 		config.WithCustomAuth(providerData.RoundTripper),
 		utils.UserAgentConfigOption(providerData.Version),

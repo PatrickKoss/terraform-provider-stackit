@@ -70,8 +70,10 @@ func NewZoneResource() resource.Resource {
 }
 
 // zoneResource is the resource implementation.
+//
+//go:generate mockgen -destination=./mock/instance.go -package=mock_zone github.com/stackitcloud/stackit-sdk-go/services/dns DefaultApi
 type zoneResource struct {
-	client *dns.APIClient
+	client dns.DefaultApi
 }
 
 // Metadata returns the resource type name.

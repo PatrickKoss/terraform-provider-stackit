@@ -16,7 +16,7 @@ import (
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/utils"
 )
 
-func DatasourceRead(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse, client *iaas.APIClient) { // nolint:gocritic // function signature required by Terraform
+func DatasourceRead(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse, client iaas.DefaultApi) { // nolint:gocritic // function signature required by Terraform
 	var model networkModel.DataSourceModel
 	diags := req.Config.Get(ctx, &model)
 	resp.Diagnostics.Append(diags...)

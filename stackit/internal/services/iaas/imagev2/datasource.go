@@ -113,7 +113,7 @@ func NewImageV2DataSource() datasource.DataSource {
 
 // imageDataV2Source is the data source implementation.
 type imageDataV2Source struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the data source type name.

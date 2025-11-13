@@ -66,3 +66,14 @@ test-acceptance-tf:
 	TF_ACC_REGION=$(TF_ACC_REGION) \
 	go test ./... -count=1 -timeout=30m && \
 	cd $(ROOT_DIR)
+
+mocks: mockgen
+	@find ./stackit/internal/ -name "*_mock.go" -type f -delete
+	export PATH=$(PWD)/bin:$$PATH && go generate ./...
+
+MOCKGEN = bin/mockgen
+.PHONY: mockgen
+mockgen: $(MOCKGEN)
+$(MOCKGEN):
+	# todo pin version
+	GOBIN=$(PWD)/bin go install go.uber.org/mock/mockgen@latest

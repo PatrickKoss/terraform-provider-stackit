@@ -40,7 +40,7 @@ func NewProjectDataSource() datasource.DataSource {
 
 // projectDatasource is the data source implementation.
 type projectDataSource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 func (d *projectDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {

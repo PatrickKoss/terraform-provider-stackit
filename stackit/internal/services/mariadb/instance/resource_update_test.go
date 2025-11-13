@@ -3,11 +3,15 @@ package mariadb
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
+	"github.com/stackitcloud/stackit-sdk-go/services/mariadb"
+	mock_instance "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/mariadb/instance/mock"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 func TestUpdate_Success(t *testing.T) {
@@ -25,25 +29,47 @@ func TestUpdate_Success(t *testing.T) {
 	version := "1.4.10"
 	dashboardUrl := "https://dashboard.example.com"
 
-	// Setup mock handlers
-	updateCalled := 0
-	tc.SetupUpdateInstanceHandler(&updateCalled)
-
+	// Setup mock expectations
 	plans := map[string]string{
 		oldPlanId: oldPlanName,
 		newPlanId: newPlanName,
 	}
-	tc.SetupListOfferingsHandlerMultiplePlans(version, plans)
+	offeringsResp := BuildListOfferingsResponseWithMultiplePlans(version, plans)
+	instanceResp := BuildInstance(instanceId, instanceName, newPlanId, dashboardUrl)
 
-	tc.SetupGetInstanceHandler(InstanceResponse{
-		InstanceId:   instanceId,
-		Name:         instanceName,
-		PlanId:       newPlanId,
-		PlanName:     newPlanName,
-		Version:      version,
-		DashboardUrl: dashboardUrl,
-		Status:       "active",
-	})
+	// Mock ListOfferings for loadPlanId (resource.go line 736)
+	mockListOfferingsReq := mock_instance.NewMockApiListOfferingsRequest(tc.MockCtrl)
+	mockListOfferingsReq.EXPECT().
+		Execute().
+		Return(offeringsResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		ListOfferings(gomock.Any(), projectId).
+		Return(mockListOfferingsReq).
+		Times(1)
+
+	// Mock PartialUpdateInstance (resource.go line 456)
+	mockUpdateReq := mock_instance.NewMockApiPartialUpdateInstanceRequest(tc.MockCtrl)
+	mockUpdateReq.EXPECT().
+		PartialUpdateInstancePayload(gomock.Any()).
+		Return(mockUpdateReq).
+		Times(1)
+	mockUpdateReq.EXPECT().
+		Execute().
+		Return(nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		PartialUpdateInstance(gomock.Any(), projectId, instanceId).
+		Return(mockUpdateReq).
+		Times(1)
+
+	// Mock GetInstanceExecute for wait handler (wait handler calls this directly, not fluent API)
+	tc.MockClient.EXPECT().
+		GetInstanceExecute(gomock.Any(), projectId, instanceId).
+		Return(instanceResp, nil).
+		AnyTimes()
 
 	// Prepare request
 	schema := tc.GetSchema()
@@ -77,30 +103,22 @@ func TestUpdate_Success(t *testing.T) {
 	tc.Resource.Update(tc.Ctx, req, resp)
 
 	// Assertions
-	if updateCalled == 0 {
-		t.Fatal("PartialUpdateInstance API should have been called")
-	}
-
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Update should succeed, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Update should succeed, but got errors: %v", resp.Diagnostics.Errors())
 
 	// Extract final state
 	var finalState Model
 	diags := resp.State.Get(tc.Ctx, &finalState)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state: %v", diags.Errors())
-	}
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
 
 	// Verify all fields match the updated values from GetInstance
-	AssertStateFieldEquals(t, "InstanceId", finalState.InstanceId, types.StringValue(instanceId))
-	AssertStateFieldEquals(t, "Id", finalState.Id, types.StringValue(fmt.Sprintf("%s,%s", projectId, instanceId)))
-	AssertStateFieldEquals(t, "ProjectId", finalState.ProjectId, types.StringValue(projectId))
-	AssertStateFieldEquals(t, "Name", finalState.Name, types.StringValue(instanceName))
-	AssertStateFieldEquals(t, "PlanId", finalState.PlanId, types.StringValue(newPlanId))
-	AssertStateFieldEquals(t, "PlanName", finalState.PlanName, types.StringValue(newPlanName))
-	AssertStateFieldEquals(t, "Version", finalState.Version, types.StringValue(version))
-	AssertStateFieldEquals(t, "DashboardUrl", finalState.DashboardUrl, types.StringValue(dashboardUrl))
+	require.Equal(t, instanceId, finalState.InstanceId.ValueString())
+	require.Equal(t, fmt.Sprintf("%s,%s", projectId, instanceId), finalState.Id.ValueString())
+	require.Equal(t, projectId, finalState.ProjectId.ValueString())
+	require.Equal(t, instanceName, finalState.Name.ValueString())
+	require.Equal(t, newPlanId, finalState.PlanId.ValueString())
+	require.Equal(t, newPlanName, finalState.PlanName.ValueString())
+	require.Equal(t, version, finalState.Version.ValueString())
+	require.Equal(t, dashboardUrl, finalState.DashboardUrl.ValueString())
 }
 
 func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
@@ -117,47 +135,54 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 	newPlanName := "stackit-mariadb-1.4.10-replica"
 	version := "1.4.10"
 
-	// Setup mock handlers
-	updateCalled := 0
-	tc.SetupUpdateInstanceHandler(&updateCalled)
-
+	// Setup mock expectations
 	plans := map[string]string{
 		oldPlanId: oldPlanName,
 		newPlanId: newPlanName,
 	}
-	tc.SetupListOfferingsHandlerMultiplePlans(version, plans)
-
-	// Setup GetInstance to simulate slow response (triggers timeout)
-	getInstanceCalled := 0
-	tc.Router.HandleFunc("/v1/projects/{projectId}/instances/{instanceId}", func(w http.ResponseWriter, r *http.Request) {
-		getInstanceCalled++
-		time.Sleep(150 * time.Millisecond) // Longer than context timeout
-		w.Header().Set("Content-Type", "application/json")
-
-		// API shows new plan (update is progressing on server side)
-		jsonResp := fmt.Sprintf(`{
-			"instanceId": "%s",
-			"name": "%s",
-			"planId": "%s",
-			"status": "updating",
-			"cfGuid": "cf-guid",
-			"cfSpaceGuid": "cf-space-guid",
-			"cfOrganizationGuid": "cf-org-guid",
-			"imageUrl": "https://image.example.com",
-			"lastOperation": {"type": "update", "state": "in progress"},
-			"offeringName": "mariadb",
-			"offeringVersion": "%s",
-			"planName": "%s",
-			"dashboardUrl": "https://dashboard.example.com",
-			"parameters": {}
-		}`, instanceId, instanceName, newPlanId, version, newPlanName)
-		w.Write([]byte(jsonResp))
-	}).Methods("GET")
+	offeringsResp := BuildListOfferingsResponseWithMultiplePlans(version, plans)
 
 	// Create context with short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	tc.Ctx = ctx
+
+	// Mock ListOfferings for loadPlanId (resource.go line 736)
+	mockListOfferingsReq := mock_instance.NewMockApiListOfferingsRequest(tc.MockCtrl)
+	mockListOfferingsReq.EXPECT().
+		Execute().
+		Return(offeringsResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		ListOfferings(gomock.Any(), projectId).
+		Return(mockListOfferingsReq).
+		Times(1)
+
+	// Mock PartialUpdateInstance (resource.go line 456)
+	mockUpdateReq := mock_instance.NewMockApiPartialUpdateInstanceRequest(tc.MockCtrl)
+	mockUpdateReq.EXPECT().
+		PartialUpdateInstancePayload(gomock.Any()).
+		Return(mockUpdateReq).
+		Times(1)
+	mockUpdateReq.EXPECT().
+		Execute().
+		Return(nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		PartialUpdateInstance(gomock.Any(), projectId, instanceId).
+		Return(mockUpdateReq).
+		Times(1)
+
+	// Mock GetInstanceExecute for wait handler (wait handler calls this directly, not fluent API)
+	tc.MockClient.EXPECT().
+		GetInstanceExecute(gomock.Any(), projectId, instanceId).
+		DoAndReturn(func(ctx context.Context, projectId, instanceId string) (*mariadb.Instance, error) {
+			time.Sleep(150 * time.Millisecond) // Longer than context timeout
+			return nil, ctx.Err()
+		}).
+		AnyTimes()
 
 	// Prepare request
 	schema := tc.GetSchema()
@@ -191,70 +216,81 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 	tc.Resource.Update(tc.Ctx, req, resp)
 
 	// Assertions
-	if updateCalled == 0 {
-		t.Fatal("PartialUpdateInstance API should have been called")
-	}
-
-	if getInstanceCalled == 0 {
-		t.Fatal("GetInstance should have been called during wait")
-	}
-
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error due to context timeout")
-	}
+	require.True(t, resp.Diagnostics.HasError(), "Expected error due to context timeout")
 
 	var stateAfterUpdate Model
 	diags := resp.State.Get(tc.Ctx, &stateAfterUpdate)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state after update: %v", diags.Errors())
-	}
+	require.False(t, diags.HasError(), "Failed to get state after update: %v", diags.Errors())
 
+	// State should preserve old values since update wait failed
 	if !stateAfterUpdate.PlanId.IsNull() {
 		actualPlanId := stateAfterUpdate.PlanId.ValueString()
-		if actualPlanId == newPlanId {
-			t.Fatal("BUG: State has NEW PlanId even though update wait failed!")
-		}
-		AssertStateFieldEquals(t, "PlanId", stateAfterUpdate.PlanId, types.StringValue(oldPlanId))
+		require.NotEqual(t, newPlanId, actualPlanId, "BUG: State has NEW PlanId even though update wait failed!")
+		require.Equal(t, oldPlanId, actualPlanId)
 	}
 
 	if !stateAfterUpdate.PlanName.IsNull() {
 		actualPlanName := stateAfterUpdate.PlanName.ValueString()
-		if actualPlanName == newPlanName {
-			t.Fatal("BUG: State has NEW PlanName even though update wait failed!")
-		}
-		AssertStateFieldEquals(t, "PlanName", stateAfterUpdate.PlanName, types.StringValue(oldPlanName))
+		require.NotEqual(t, newPlanName, actualPlanName, "BUG: State has NEW PlanName even though update wait failed!")
+		require.Equal(t, oldPlanName, actualPlanName)
 	}
 
-	AssertStateFieldEquals(t, "Id", stateAfterUpdate.Id, currentState.Id)
-	AssertStateFieldEquals(t, "ProjectId", stateAfterUpdate.ProjectId, currentState.ProjectId)
-	AssertStateFieldEquals(t, "InstanceId", stateAfterUpdate.InstanceId, currentState.InstanceId)
-	AssertStateFieldEquals(t, "Name", stateAfterUpdate.Name, currentState.Name)
-	AssertStateFieldEquals(t, "Version", stateAfterUpdate.Version, currentState.Version)
+	require.Equal(t, currentState.Id.ValueString(), stateAfterUpdate.Id.ValueString())
+	require.Equal(t, currentState.ProjectId.ValueString(), stateAfterUpdate.ProjectId.ValueString())
+	require.Equal(t, currentState.InstanceId.ValueString(), stateAfterUpdate.InstanceId.ValueString())
+	require.Equal(t, currentState.Name.ValueString(), stateAfterUpdate.Name.ValueString())
+	require.Equal(t, currentState.Version.ValueString(), stateAfterUpdate.Version.ValueString())
 }
 
 func TestUpdate_APICallFails(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Setup mock handlers
-	tc.Router.HandleFunc("/v1/projects/{projectId}/instances/{instanceId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"message": "Internal server error"}`))
-	}).Methods("PATCH")
+	projectId := "test-project"
+	instanceId := "test-instance"
 
-	tc.SetupListOfferingsHandlerMultiplePlans("1.4.10", map[string]string{
+	// Setup mock expectations
+	offeringsResp := BuildListOfferingsResponseWithMultiplePlans("1.4.10", map[string]string{
 		"old-plan": "old-plan-name",
 		"new-plan": "new-plan-name",
 	})
+	apiErr := &oapierror.GenericOpenAPIError{}
+
+	// Mock ListOfferings for loadPlanId (resource.go line 736)
+	mockListOfferingsReq := mock_instance.NewMockApiListOfferingsRequest(tc.MockCtrl)
+	mockListOfferingsReq.EXPECT().
+		Execute().
+		Return(offeringsResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		ListOfferings(gomock.Any(), projectId).
+		Return(mockListOfferingsReq).
+		Times(1)
+
+	// Mock PartialUpdateInstance to fail (resource.go line 456)
+	mockUpdateReq := mock_instance.NewMockApiPartialUpdateInstanceRequest(tc.MockCtrl)
+	mockUpdateReq.EXPECT().
+		PartialUpdateInstancePayload(gomock.Any()).
+		Return(mockUpdateReq).
+		Times(1)
+	mockUpdateReq.EXPECT().
+		Execute().
+		Return(apiErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		PartialUpdateInstance(gomock.Any(), projectId, instanceId).
+		Return(mockUpdateReq).
+		Times(1)
 
 	// Prepare request
 	schema := tc.GetSchema()
 
 	currentState := Model{
 		Id:         types.StringValue("test-project,test-instance"),
-		ProjectId:  types.StringValue("test-project"),
-		InstanceId: types.StringValue("test-instance"),
+		ProjectId:  types.StringValue(projectId),
+		InstanceId: types.StringValue(instanceId),
 		Name:       types.StringValue("test-name"),
 		Version:    types.StringValue("1.4.10"),
 		PlanId:     types.StringValue("old-plan"),
@@ -264,8 +300,8 @@ func TestUpdate_APICallFails(t *testing.T) {
 
 	plannedState := Model{
 		Id:         types.StringValue("test-project,test-instance"),
-		ProjectId:  types.StringValue("test-project"),
-		InstanceId: types.StringValue("test-instance"),
+		ProjectId:  types.StringValue(projectId),
+		InstanceId: types.StringValue(instanceId),
 		Name:       types.StringValue("test-name"),
 		Version:    types.StringValue("1.4.10"),
 		PlanId:     types.StringValue("new-plan"),
@@ -280,7 +316,5 @@ func TestUpdate_APICallFails(t *testing.T) {
 	tc.Resource.Update(tc.Ctx, req, resp)
 
 	// Assertions
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error when API call fails")
-	}
+	require.True(t, resp.Diagnostics.HasError(), "Expected error when API call fails")
 }

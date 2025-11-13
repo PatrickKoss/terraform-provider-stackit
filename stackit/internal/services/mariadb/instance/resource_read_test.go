@@ -6,6 +6,10 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
+	mock_instance "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/mariadb/instance/mock"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 func TestRead_Success(t *testing.T) {
@@ -20,17 +24,33 @@ func TestRead_Success(t *testing.T) {
 	version := "1.4.10"
 	dashboardUrl := "https://dashboard.example.com"
 
-	tc.SetupGetInstanceHandler(InstanceResponse{
-		InstanceId:   instanceId,
-		Name:         instanceName,
-		PlanId:       planId,
-		PlanName:     planName,
-		Version:      version,
-		DashboardUrl: dashboardUrl,
-		Status:       "active",
-	})
+	// Setup mock expectations
+	instanceResp := BuildInstance(instanceId, instanceName, planId, dashboardUrl)
+	offeringsResp := BuildListOfferingsResponse(version, planId, planName)
 
-	tc.SetupListOfferingsHandler(version, planId, planName)
+	// Mock GetInstance (resource.go line 386)
+	mockGetReq := mock_instance.NewMockApiGetInstanceRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(instanceResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetInstance(gomock.Any(), projectId, instanceId).
+		Return(mockGetReq).
+		Times(1)
+
+	// Mock ListOfferings for loadPlanNameAndVersion (resource.go line 774)
+	mockListOfferingsReq := mock_instance.NewMockApiListOfferingsRequest(tc.MockCtrl)
+	mockListOfferingsReq.EXPECT().
+		Execute().
+		Return(offeringsResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		ListOfferings(gomock.Any(), projectId).
+		Return(mockListOfferingsReq).
+		Times(1)
 
 	schema := tc.GetSchema()
 
@@ -51,31 +71,23 @@ func TestRead_Success(t *testing.T) {
 
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
 
 	var refreshedState Model
 	diags := resp.State.Get(tc.Ctx, &refreshedState)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state: %v", diags.Errors())
-	}
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
 
-	AssertStateFieldEquals(t, "InstanceId", refreshedState.InstanceId, types.StringValue(instanceId))
-	AssertStateFieldEquals(t, "Id", refreshedState.Id, types.StringValue(fmt.Sprintf("%s,%s", projectId, instanceId)))
-	AssertStateFieldEquals(t, "ProjectId", refreshedState.ProjectId, types.StringValue(projectId))
-	AssertStateFieldEquals(t, "Name", refreshedState.Name, types.StringValue(instanceName))
-	AssertStateFieldEquals(t, "PlanId", refreshedState.PlanId, types.StringValue(planId))
-	AssertStateFieldEquals(t, "PlanName", refreshedState.PlanName, types.StringValue(planName))
-	AssertStateFieldEquals(t, "Version", refreshedState.Version, types.StringValue(version))
-	AssertStateFieldEquals(t, "DashboardUrl", refreshedState.DashboardUrl, types.StringValue(dashboardUrl))
+	require.Equal(t, instanceId, refreshedState.InstanceId.ValueString())
+	require.Equal(t, fmt.Sprintf("%s,%s", projectId, instanceId), refreshedState.Id.ValueString())
+	require.Equal(t, projectId, refreshedState.ProjectId.ValueString())
+	require.Equal(t, instanceName, refreshedState.Name.ValueString())
+	require.Equal(t, planId, refreshedState.PlanId.ValueString())
+	require.Equal(t, planName, refreshedState.PlanName.ValueString())
+	require.Equal(t, version, refreshedState.Version.ValueString())
+	require.Equal(t, dashboardUrl, refreshedState.DashboardUrl.ValueString())
 
-	if refreshedState.CfGuid.IsNull() {
-		t.Error("CfGuid should be set from API response")
-	}
-	if refreshedState.ImageUrl.IsNull() {
-		t.Error("ImageUrl should be set from API response")
-	}
+	require.False(t, refreshedState.CfGuid.IsNull(), "CfGuid should be set from API response")
+	require.False(t, refreshedState.ImageUrl.IsNull(), "ImageUrl should be set from API response")
 }
 
 func TestRead_InstanceNotFound(t *testing.T) {
@@ -86,11 +98,21 @@ func TestRead_InstanceNotFound(t *testing.T) {
 	instanceId := "non-existent-instance"
 
 	// Setup GetInstance to return 404
-	tc.Router.HandleFunc("/v1/projects/{projectId}/instances/{instanceId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"message": "Instance not found"}`))
-	}).Methods("GET")
+	notFoundErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusNotFound,
+	}
+
+	// Mock GetInstance (resource.go line 386)
+	mockGetReq := mock_instance.NewMockApiGetInstanceRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(nil, notFoundErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetInstance(gomock.Any(), projectId, instanceId).
+		Return(mockGetReq).
+		Times(1)
 
 	schema := tc.GetSchema()
 
@@ -106,9 +128,7 @@ func TestRead_InstanceNotFound(t *testing.T) {
 
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should not error when instance not found, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Read should not error when instance not found, but got errors: %v", resp.Diagnostics.Errors())
 }
 
 func TestRead_InstanceGone(t *testing.T) {
@@ -118,11 +138,22 @@ func TestRead_InstanceGone(t *testing.T) {
 	projectId := "test-project-123"
 	instanceId := "gone-instance"
 
-	tc.Router.HandleFunc("/v1/projects/{projectId}/instances/{instanceId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusGone)
-		w.Write([]byte(`{"message": "Instance has been deleted"}`))
-	}).Methods("GET")
+	// Setup GetInstance to return 410 Gone
+	goneErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusGone,
+	}
+
+	// Mock GetInstance (resource.go line 386)
+	mockGetReq := mock_instance.NewMockApiGetInstanceRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(nil, goneErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetInstance(gomock.Any(), projectId, instanceId).
+		Return(mockGetReq).
+		Times(1)
 
 	schema := tc.GetSchema()
 
@@ -138,28 +169,39 @@ func TestRead_InstanceGone(t *testing.T) {
 
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should not error when instance is gone, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Read should not error when instance is gone, but got errors: %v", resp.Diagnostics.Errors())
 }
 
 func TestRead_APICallFails(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
+	projectId := "test-project"
+	instanceId := "test-instance"
+
 	// Setup GetInstance to return 500 error
-	tc.Router.HandleFunc("/v1/projects/{projectId}/instances/{instanceId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"message": "Internal server error"}`))
-	}).Methods("GET")
+	serverErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusInternalServerError,
+	}
+
+	// Mock GetInstance (resource.go line 386)
+	mockGetReq := mock_instance.NewMockApiGetInstanceRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(nil, serverErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetInstance(gomock.Any(), projectId, instanceId).
+		Return(mockGetReq).
+		Times(1)
 
 	schema := tc.GetSchema()
 
 	state := Model{
 		Id:         types.StringValue("test-project,test-instance"),
-		ProjectId:  types.StringValue("test-project"),
-		InstanceId: types.StringValue("test-instance"),
+		ProjectId:  types.StringValue(projectId),
+		InstanceId: types.StringValue(instanceId),
 		Parameters: types.ObjectNull(parametersTypes),
 	}
 
@@ -168,9 +210,7 @@ func TestRead_APICallFails(t *testing.T) {
 
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error when API call fails")
-	}
+	require.True(t, resp.Diagnostics.HasError(), "Expected error when API call fails")
 }
 
 func TestRead_DetectDrift(t *testing.T) {
@@ -185,22 +225,39 @@ func TestRead_DetectDrift(t *testing.T) {
 	oldPlanName := "stackit-mariadb-1.4.10-single"
 	newPlanName := "stackit-mariadb-1.4.10-replica" // Changed in cloud
 	version := "1.4.10"
+	dashboardUrl := "https://dashboard.example.com"
 
-	tc.SetupGetInstanceHandler(InstanceResponse{
-		InstanceId:   instanceId,
-		Name:         instanceName,
-		PlanId:       newPlanId, // Drift detected!
-		PlanName:     newPlanName,
-		Version:      version,
-		DashboardUrl: "https://dashboard.example.com",
-		Status:       "active",
-	})
-
+	// Setup mock expectations - instance has drifted to new plan
+	instanceResp := BuildInstance(instanceId, instanceName, newPlanId, dashboardUrl)
 	plans := map[string]string{
 		oldPlanId: oldPlanName,
 		newPlanId: newPlanName,
 	}
-	tc.SetupListOfferingsHandlerMultiplePlans(version, plans)
+	offeringsResp := BuildListOfferingsResponseWithMultiplePlans(version, plans)
+
+	// Mock GetInstance - returns drifted state (resource.go line 386)
+	mockGetReq := mock_instance.NewMockApiGetInstanceRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(instanceResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetInstance(gomock.Any(), projectId, instanceId).
+		Return(mockGetReq).
+		Times(1)
+
+	// Mock ListOfferings for loadPlanNameAndVersion (resource.go line 774)
+	mockListOfferingsReq := mock_instance.NewMockApiListOfferingsRequest(tc.MockCtrl)
+	mockListOfferingsReq.EXPECT().
+		Execute().
+		Return(offeringsResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		ListOfferings(gomock.Any(), projectId).
+		Return(mockListOfferingsReq).
+		Times(1)
 
 	schema := tc.GetSchema()
 
@@ -220,16 +277,13 @@ func TestRead_DetectDrift(t *testing.T) {
 
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
 
 	var refreshedState Model
 	diags := resp.State.Get(tc.Ctx, &refreshedState)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state: %v", diags.Errors())
-	}
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
 
-	AssertStateFieldEquals(t, "PlanId", refreshedState.PlanId, types.StringValue(newPlanId))
-	AssertStateFieldEquals(t, "PlanName", refreshedState.PlanName, types.StringValue(newPlanName))
+	// Verify drift was detected and state was updated
+	require.Equal(t, newPlanId, refreshedState.PlanId.ValueString())
+	require.Equal(t, newPlanName, refreshedState.PlanName.ValueString())
 }

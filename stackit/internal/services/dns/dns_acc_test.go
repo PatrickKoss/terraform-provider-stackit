@@ -495,7 +495,7 @@ func TestAccDnsMaxResource(t *testing.T) {
 
 func testAccCheckDnsDestroy(s *terraform.State) error {
 	ctx := context.Background()
-	var client *dns.APIClient
+	var client dns.DefaultApi
 	var err error
 	if testutil.DnsCustomEndpoint == "" {
 		client, err = dns.NewAPIClient()

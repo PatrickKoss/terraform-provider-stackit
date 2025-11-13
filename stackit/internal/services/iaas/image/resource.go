@@ -111,7 +111,7 @@ func NewImageResource() resource.Resource {
 
 // imageResource is the resource implementation.
 type imageResource struct {
-	client *iaas.APIClient
+	client iaas.DefaultApi
 }
 
 // Metadata returns the resource type name.
