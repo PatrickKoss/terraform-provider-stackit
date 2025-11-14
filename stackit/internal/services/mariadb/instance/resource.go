@@ -321,6 +321,7 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 
 	model.InstanceId = types.StringValue(instanceId)
 	model.Id = utils.BuildInternalTerraformId(model.ProjectId.ValueString(), instanceId)
+	model.ProjectId = types.StringValue(projectId)
 
 	// Set all unknown/null fields to null before saving state
 	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
@@ -342,7 +343,7 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 	// Wait for instance to be ready
 	waitResp, err := wait.CreateInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating instance", fmt.Sprintf("Instance creation waiting: %v", err))
+		tflog.Warn(ctx, fmt.Sprintf("Instance creation waiting failed: %v. The instance was created but waiting for ready state was interrupted. State will be refreshed on next apply.", err))
 		return
 	}
 
@@ -467,7 +468,7 @@ func (r *instanceResource) Update(ctx context.Context, req resource.UpdateReques
 	// Wait for update to complete
 	waitResp, err := wait.PartialUpdateInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating instance", fmt.Sprintf("Instance update waiting: %v. The update was triggered but may not be complete. Run 'terraform refresh' to check the current state.", err))
+		tflog.Warn(ctx, fmt.Sprintf("Instance update waiting failed: %v. The update was triggered but waiting for completion was interrupted. State will be refreshed on next apply.", err))
 		return
 	}
 
@@ -483,6 +484,7 @@ func (r *instanceResource) Update(ctx context.Context, req resource.UpdateReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
 	tflog.Info(ctx, "MariaDB instance updated")
 }
 
@@ -521,7 +523,7 @@ func (r *instanceResource) Delete(ctx context.Context, req resource.DeleteReques
 	// Wait for deletion to complete
 	_, err = wait.DeleteInstanceWaitHandler(ctx, r.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting instance", fmt.Sprintf("Instance deletion waiting: %v. The instance deletion was triggered but confirmation timed out. The instance may still be deleting. Check the STACKIT Portal or retry the operation.", err))
+		tflog.Warn(ctx, fmt.Sprintf("Instance deletion waiting failed: %v. The instance deletion was triggered but waiting for completion was interrupted. The instance may still be deleting.", err))
 		return
 	}
 	tflog.Info(ctx, "MariaDB instance deleted")
