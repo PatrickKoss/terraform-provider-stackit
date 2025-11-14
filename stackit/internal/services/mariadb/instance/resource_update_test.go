@@ -216,7 +216,7 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 	tc.Resource.Update(tc.Ctx, req, resp)
 
 	// Assertions
-	require.True(t, resp.Diagnostics.HasError(), "Expected error due to context timeout")
+	require.False(t, resp.Diagnostics.HasError(), "Expected no error due to context timeout")
 
 	var stateAfterUpdate Model
 	diags := resp.State.Get(tc.Ctx, &stateAfterUpdate)

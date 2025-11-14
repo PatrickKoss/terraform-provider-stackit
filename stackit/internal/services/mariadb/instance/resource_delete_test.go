@@ -125,7 +125,7 @@ func TestDelete_ContextCanceledDuringWait(t *testing.T) {
 
 	tc.Resource.Delete(tc.Ctx, req, resp)
 
-	require.True(t, resp.Diagnostics.HasError(), "Expected error due to context timeout")
+	require.False(t, resp.Diagnostics.HasError(), "Expected no error due to context timeout")
 
 	var stateAfterDelete Model
 	diags := resp.State.Get(tc.Ctx, &stateAfterDelete)

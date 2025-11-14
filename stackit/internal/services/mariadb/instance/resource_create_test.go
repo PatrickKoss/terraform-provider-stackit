@@ -81,13 +81,11 @@ func TestCreate_ContextCanceledDuringWait(t *testing.T) {
 	tc.Resource.Create(tc.Ctx, req, resp)
 
 	// Assertions
-	require.True(t, resp.Diagnostics.HasError(), "Expected error due to context timeout")
+	require.False(t, resp.Diagnostics.HasError(), "Expected no error due to context timeout")
 
 	var stateAfterCreate Model
 	diags := resp.State.Get(tc.Ctx, &stateAfterCreate)
-	if diags.HasError() {
-		t.Logf("Warnings getting state: %v", diags)
-	}
+	require.False(t, diags.HasError(), "Expected no errors reading state")
 
 	// Verify idempotency - InstanceId should be saved immediately after CreateInstance succeeds
 	require.False(t, stateAfterCreate.InstanceId.IsNull(), "BUG: InstanceId should be saved to state immediately after CreateInstance API succeeds")

@@ -335,6 +335,15 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
+	// utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]interface{}{
+	// 	"project_id":  projectId,
+	// 	"instance_id": model.InstanceId,
+	// 	"id":          model.Id,
+	// })
+	// if resp.Diagnostics.HasError() {
+	// 	return
+	// }
+
 	if !utils.ShouldWait() {
 		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
