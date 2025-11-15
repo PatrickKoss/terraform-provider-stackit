@@ -34,17 +34,17 @@ func TestCreate_ContextCanceledDuringWait(t *testing.T) {
 	defer cancel()
 	tc.Ctx = ctx
 
-	// Mock ListOfferings for loadPlanId (resource.go line 736)
+	// Mock ListOfferings for loadPlanId (called during both Create and Read operations)
 	mockListOfferingsReq := mock_instance.NewMockApiListOfferingsRequest(tc.MockCtrl)
 	mockListOfferingsReq.EXPECT().
 		Execute().
 		Return(offeringsResp, nil).
-		Times(1)
+		Times(2)
 
 	tc.MockClient.EXPECT().
 		ListOfferings(gomock.Any(), projectId).
 		Return(mockListOfferingsReq).
-		Times(1)
+		Times(2)
 
 	// Mock CreateInstance (resource.go line 314)
 	mockCreateReq := mock_instance.NewMockApiCreateInstanceRequest(tc.MockCtrl)
@@ -71,6 +71,10 @@ func TestCreate_ContextCanceledDuringWait(t *testing.T) {
 		}).
 		AnyTimes()
 
+	// Build complete instance response for subsequent Read operation
+	dashboardUrl := "https://dashboard.example.com"
+	completeInstance := BuildInstance(instanceId, instanceName, planId, dashboardUrl)
+
 	// Prepare request
 	schema := tc.GetSchema()
 	model := CreateTestModel(projectId, "", instanceName, version, planName)
@@ -91,7 +95,7 @@ func TestCreate_ContextCanceledDuringWait(t *testing.T) {
 	require.False(t, stateAfterCreate.InstanceId.IsNull(), "BUG: InstanceId should be saved to state immediately after CreateInstance API succeeds")
 	require.NotEmpty(t, stateAfterCreate.InstanceId.ValueString(), "InstanceId should not be empty")
 
-	// Verify all expected fields are set in state after failed wait
+	// Verify basic fields from input/CreateInstance response are set
 	require.Equal(t, instanceId, stateAfterCreate.InstanceId.ValueString())
 	require.Equal(t, fmt.Sprintf("%s,%s", projectId, instanceId), stateAfterCreate.Id.ValueString())
 	require.Equal(t, projectId, stateAfterCreate.ProjectId.ValueString())
@@ -99,6 +103,57 @@ func TestCreate_ContextCanceledDuringWait(t *testing.T) {
 	require.Equal(t, version, stateAfterCreate.Version.ValueString())
 	require.Equal(t, planName, stateAfterCreate.PlanName.ValueString())
 	require.Equal(t, planId, stateAfterCreate.PlanId.ValueString())
+
+	// CRITICAL: Verify fields that require GetInstance are NULL after failed wait
+	// If these are not null, it means wait succeeded (which shouldn't happen with our timeout)
+	// If Read doesn't populate these, Terraform will detect state drift
+	require.True(t, stateAfterCreate.DashboardUrl.IsNull(), "DashboardUrl should be null after failed wait (only GetInstance provides this)")
+	require.True(t, stateAfterCreate.CfGuid.IsNull(), "CfGuid should be null after failed wait (only GetInstance provides this)")
+	require.True(t, stateAfterCreate.ImageUrl.IsNull(), "ImageUrl should be null after failed wait (only GetInstance provides this)")
+
+	// Simulate the next Terraform run: Read operation with the partial state from failed Create
+	// This tests the idempotency guarantee - Read should fill in missing fields without errors
+	// Setup mock for subsequent Read operation (uses fluent API GetInstance)
+	mockGetReq := mock_instance.NewMockApiGetInstanceRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(completeInstance, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetInstance(gomock.Any(), projectId, instanceId).
+		Return(mockGetReq).
+		Times(1)
+
+	// Pass the partial state from Create to Read (simulating Terraform's behavior)
+	readReq := ReadRequest(tc.Ctx, schema, stateAfterCreate)
+	readResp := ReadResponse(schema)
+
+	// Execute Read with partial state
+	tc.Resource.Read(tc.Ctx, readReq, readResp)
+
+	require.False(t, readResp.Diagnostics.HasError(), "Expected no error during Read operation")
+
+	// Verify that Read successfully populated all fields from the API
+	var stateAfterRead Model
+	diags = readResp.State.Get(tc.Ctx, &stateAfterRead)
+	require.False(t, diags.HasError(), "Expected no errors reading state after Read")
+
+	// Verify all fields are now complete after successful Read (prevents state drift)
+	require.Equal(t, instanceId, stateAfterRead.InstanceId.ValueString())
+	require.Equal(t, fmt.Sprintf("%s,%s", projectId, instanceId), stateAfterRead.Id.ValueString())
+	require.Equal(t, projectId, stateAfterRead.ProjectId.ValueString())
+	require.Equal(t, instanceName, stateAfterRead.Name.ValueString())
+	require.Equal(t, planId, stateAfterRead.PlanId.ValueString())
+	require.Equal(t, planName, stateAfterRead.PlanName.ValueString())
+	require.Equal(t, version, stateAfterRead.Version.ValueString())
+
+	// CRITICAL: Verify fields that were NULL after Create are now populated
+	// This prevents Terraform state drift on the next apply
+	require.False(t, stateAfterRead.DashboardUrl.IsNull(), "DashboardUrl must be populated by Read to prevent state drift")
+	require.Equal(t, dashboardUrl, stateAfterRead.DashboardUrl.ValueString())
+	require.False(t, stateAfterRead.CfGuid.IsNull(), "CfGuid must be populated by Read to prevent state drift")
+	require.False(t, stateAfterRead.ImageUrl.IsNull(), "ImageUrl must be populated by Read to prevent state drift")
 }
 
 func TestCreate_Success(t *testing.T) {

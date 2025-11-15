@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRead_Success(t *testing.T) {
@@ -41,9 +42,7 @@ func TestRead_Success(t *testing.T) {
 	tc.Resource.Read(tc.Ctx, req, resp)
 
 	// Assertions
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Expected no errors reading state")
 
 	// Extract final state
 	var finalState Model
