@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stackitcloud/stackit-sdk-go/core/utils"
 	"github.com/stackitcloud/stackit-sdk-go/services/dns"
 	mock_recordset "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/dns/recordset/mock"
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,7 @@ func TestUpdate_Success(t *testing.T) {
 
 	// Setup mock expectations
 	recordSet := BuildRecordSet(recordSetId, name, zoneId, recordType, newRecords)
+	recordSet.State = dns.RECORDSETSTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 	recordSetResp := &dns.RecordSetResponse{Rrset: recordSet}
 
 	// Mock PartialUpdateRecordSet
@@ -40,7 +42,7 @@ func TestUpdate_Success(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(nil, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -114,7 +116,7 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(nil, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -183,7 +185,7 @@ func TestUpdate_APICallFails(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(apiErr).
+		Return(nil, apiErr).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -227,6 +229,7 @@ func TestUpdate_ChangeRecords(t *testing.T) {
 
 	// Setup mock expectations
 	recordSet := BuildRecordSet(recordSetId, name, zoneId, recordType, newRecords)
+	recordSet.State = dns.RECORDSETSTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 	recordSetResp := &dns.RecordSetResponse{Rrset: recordSet}
 
 	// Mock PartialUpdateRecordSet
@@ -237,7 +240,7 @@ func TestUpdate_ChangeRecords(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(nil, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -294,6 +297,8 @@ func TestUpdate_ChangeTTL(t *testing.T) {
 
 	// Setup mock expectations
 	recordSet := BuildRecordSet(recordSetId, name, zoneId, recordType, records)
+	recordSet.Ttl = utils.Ptr(newTTL) // Updated TTL
+	recordSet.State = dns.RECORDSETSTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 	recordSetResp := &dns.RecordSetResponse{Rrset: recordSet}
 
 	// Mock PartialUpdateRecordSet
@@ -304,7 +309,7 @@ func TestUpdate_ChangeTTL(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(nil, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().

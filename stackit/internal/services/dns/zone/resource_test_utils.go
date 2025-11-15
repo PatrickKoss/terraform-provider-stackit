@@ -86,7 +86,7 @@ func BuildZone(zoneId, name, dnsName string) *dns.Zone {
 		SerialNumber:      utils.Ptr(int64(1)),
 		Type:              dns.ZONETYPE_PRIMARY.Ptr(),
 		Visibility:        dns.ZONEVISIBILITY_PUBLIC.Ptr(),
-		State:             dns.ZONESTATE_CREATING.Ptr(),
+		State:             dns.ZONESTATE_CREATE_SUCCEEDED.Ptr(),
 	}
 }
 
@@ -113,6 +113,7 @@ func CreateTestModel(projectId, zoneId, name, dnsName string) Model {
 		ZoneId:    types.StringValue(zoneId),
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
+		Primaries: types.ListNull(types.StringType),
 	}
 }
 

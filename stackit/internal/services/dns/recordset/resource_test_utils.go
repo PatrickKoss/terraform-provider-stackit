@@ -83,7 +83,7 @@ func BuildRecordSet(recordSetId, name, zoneId string, recordType dns.RecordSetTy
 		Active:  utils.Ptr(true),
 		Comment: utils.Ptr("Test record set"),
 		Error:   utils.Ptr(""),
-		State:   dns.RECORDSETSTATE_CREATING.Ptr(),
+		State:   dns.RECORDSETSTATE_CREATE_SUCCEEDED.Ptr(),
 	}
 }
 
@@ -99,7 +99,7 @@ func BuildZone(zoneId, name, dnsName string) *dns.Zone {
 		Name:    utils.Ptr(name),
 		DnsName: utils.Ptr(dnsName),
 		Active:  utils.Ptr(true),
-		State:   dns.ZONESTATE_CREATING.Ptr(),
+		State:   dns.ZONESTATE_CREATE_SUCCEEDED.Ptr(),
 	}
 }
 

@@ -28,6 +28,7 @@ func TestUpdate_Success(t *testing.T) {
 	// Setup mock expectations - update ACL
 	zone := BuildZone(zoneId, name, dnsName)
 	zone.Acl = utils.Ptr("192.168.0.0/16") // Updated ACL
+	zone.State = dns.ZONESTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 
 	// Mock PartialUpdateZone
 	mockUpdateReq := mock_zone.NewMockApiPartialUpdateZoneRequest(tc.MockCtrl)
@@ -37,7 +38,7 @@ func TestUpdate_Success(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(&dns.ZoneResponse{Zone: zone}, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -61,6 +62,7 @@ func TestUpdate_Success(t *testing.T) {
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
 		Acl:       types.StringValue("0.0.0.0/0"), // Old value
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	plannedState := Model{
@@ -70,6 +72,7 @@ func TestUpdate_Success(t *testing.T) {
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
 		Acl:       types.StringValue("192.168.0.0/16"), // New value
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := UpdateRequest(tc.Ctx, schema, currentState, plannedState)
@@ -117,7 +120,7 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(nil, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -128,7 +131,7 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 	// Mock GetZoneExecute for wait handler - simulate timeout
 	tc.MockClient.EXPECT().
 		GetZoneExecute(gomock.Any(), projectId, zoneId).
-		DoAndReturn(func(ctx context.Context, projectId, zoneId string) (*dns.Zone, error) {
+		DoAndReturn(func(ctx context.Context, projectId, zoneId string) (*dns.ZoneResponse, error) {
 			time.Sleep(150 * time.Millisecond) // Longer than context timeout
 			return nil, ctx.Err()
 		}).
@@ -144,6 +147,7 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
 		Acl:       types.StringValue("0.0.0.0/0"),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	plannedState := Model{
@@ -153,6 +157,7 @@ func TestUpdate_ContextCanceledDuringWait(t *testing.T) {
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
 		Acl:       types.StringValue("192.168.0.0/16"),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := UpdateRequest(tc.Ctx, schema, currentState, plannedState)
@@ -199,7 +204,7 @@ func TestUpdate_APICallFails(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(apiErr).
+		Return(nil, apiErr).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -217,6 +222,7 @@ func TestUpdate_APICallFails(t *testing.T) {
 		Name:      types.StringValue("test-name"),
 		DnsName:   types.StringValue("example.com."),
 		Acl:       types.StringValue("0.0.0.0/0"),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	plannedState := Model{
@@ -226,6 +232,7 @@ func TestUpdate_APICallFails(t *testing.T) {
 		Name:      types.StringValue("test-name"),
 		DnsName:   types.StringValue("example.com."),
 		Acl:       types.StringValue("192.168.0.0/16"),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := UpdateRequest(tc.Ctx, schema, currentState, plannedState)
@@ -252,6 +259,7 @@ func TestUpdate_ChangePrimaries(t *testing.T) {
 
 	// Setup mock expectations
 	zone := BuildZoneWithPrimaries(zoneId, name, dnsName, newPrimaries)
+	zone.State = dns.ZONESTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 
 	// Mock PartialUpdateZone
 	mockUpdateReq := mock_zone.NewMockApiPartialUpdateZoneRequest(tc.MockCtrl)
@@ -261,7 +269,7 @@ func TestUpdate_ChangePrimaries(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(&dns.ZoneResponse{Zone: zone}, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -347,6 +355,7 @@ func TestUpdate_ChangeDescription(t *testing.T) {
 	// Setup mock expectations - change description
 	zone := BuildZone(zoneId, name, dnsName)
 	zone.Description = utils.Ptr("Updated zone description")
+	zone.State = dns.ZONESTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 
 	// Mock PartialUpdateZone
 	mockUpdateReq := mock_zone.NewMockApiPartialUpdateZoneRequest(tc.MockCtrl)
@@ -356,7 +365,7 @@ func TestUpdate_ChangeDescription(t *testing.T) {
 		Times(1)
 	mockUpdateReq.EXPECT().
 		Execute().
-		Return(nil).
+		Return(&dns.ZoneResponse{Zone: zone}, nil).
 		Times(1)
 
 	tc.MockClient.EXPECT().
@@ -380,6 +389,7 @@ func TestUpdate_ChangeDescription(t *testing.T) {
 		Name:        types.StringValue(name),
 		DnsName:     types.StringValue(dnsName),
 		Description: types.StringValue("Original description"),
+		Primaries:   types.ListNull(types.StringType),
 	}
 
 	plannedState := Model{
@@ -389,6 +399,7 @@ func TestUpdate_ChangeDescription(t *testing.T) {
 		Name:        types.StringValue(name),
 		DnsName:     types.StringValue(dnsName),
 		Description: types.StringValue("Updated zone description"),
+		Primaries:   types.ListNull(types.StringType),
 	}
 
 	req := UpdateRequest(tc.Ctx, schema, currentState, plannedState)
