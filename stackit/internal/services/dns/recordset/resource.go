@@ -57,6 +57,9 @@ func NewRecordSetResource() resource.Resource {
 }
 
 // recordSetResource is the resource implementation.
+//
+//go:generate mockgen -destination=./mock/recordset.go -package=mock_recordset github.com/stackitcloud/stackit-sdk-go/services/dns DefaultApi
+//go:generate mockgen -destination=./mock/requests.go -package=mock_recordset github.com/stackitcloud/stackit-sdk-go/services/dns ApiCreateRecordSetRequest,ApiGetRecordSetRequest,ApiPartialUpdateRecordSetRequest,ApiDeleteRecordSetRequest,ApiGetZoneRequest
 type recordSetResource struct {
 	client dns.DefaultApi
 }

@@ -71,7 +71,8 @@ func NewZoneResource() resource.Resource {
 
 // zoneResource is the resource implementation.
 //
-//go:generate mockgen -destination=./mock/instance.go -package=mock_zone github.com/stackitcloud/stackit-sdk-go/services/dns DefaultApi
+//go:generate mockgen -destination=./mock/zone.go -package=mock_zone github.com/stackitcloud/stackit-sdk-go/services/dns DefaultApi
+//go:generate mockgen -destination=./mock/requests.go -package=mock_zone github.com/stackitcloud/stackit-sdk-go/services/dns ApiCreateZoneRequest,ApiGetZoneRequest,ApiPartialUpdateZoneRequest,ApiDeleteZoneRequest
 type zoneResource struct {
 	client dns.DefaultApi
 }

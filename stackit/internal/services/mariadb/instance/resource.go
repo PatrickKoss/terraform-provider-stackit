@@ -337,8 +337,12 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 
 	// utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]interface{}{
 	// 	"project_id":  projectId,
-	// 	"instance_id": model.InstanceId,
-	// 	"id":          model.Id,
+	// 	"instance_id": model.InstanceId.ValueString(),
+	// 	"id":          model.Id.ValueString(),
+	// 	"name":        model.Name.ValueString(),
+	// 	"plan_name":   model.PlanName.ValueString(),
+	// 	"version":     model.Version.ValueString(),
+	// 	"plan_id":     model.PlanId.ValueString(),
 	// })
 	// if resp.Diagnostics.HasError() {
 	// 	return

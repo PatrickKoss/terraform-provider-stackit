@@ -2,57 +2,44 @@ package dns
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/gorilla/mux"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
-	"github.com/stackitcloud/stackit-sdk-go/core/config"
 	"github.com/stackitcloud/stackit-sdk-go/core/utils"
 	"github.com/stackitcloud/stackit-sdk-go/services/dns"
+	mock_recordset "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/dns/recordset/mock"
+	"go.uber.org/mock/gomock"
 )
 
 // TestContext holds common test setup
 type TestContext struct {
 	T          *testing.T
-	Server     *httptest.Server
-	Client     *dns.APIClient
+	MockCtrl   *gomock.Controller
+	MockClient *mock_recordset.MockDefaultApi
 	Resource   *recordSetResource
-	Router     *mux.Router
 	Ctx        context.Context
 	CancelFunc context.CancelFunc
 }
 
-// NewTestContext creates a new test context with mock server
+// NewTestContext creates a new test context with mock client
 func NewTestContext(t *testing.T) *TestContext {
-	router := mux.NewRouter()
-	server := httptest.NewServer(router)
-
-	client, err := dns.NewAPIClient(
-		config.WithEndpoint(server.URL),
-		config.WithoutAuthentication(),
-	)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
+	ctrl := gomock.NewController(t)
+	mockClient := mock_recordset.NewMockDefaultApi(ctrl)
 
 	resource := &recordSetResource{
-		client: client,
+		client: mockClient,
 	}
 
 	return &TestContext{
-		T:        t,
-		Server:   server,
-		Client:   client,
-		Resource: resource,
-		Router:   router,
-		Ctx:      context.Background(),
+		T:          t,
+		MockCtrl:   ctrl,
+		MockClient: mockClient,
+		Resource:   resource,
+		Ctx:        context.Background(),
 	}
 }
 
@@ -61,7 +48,7 @@ func (tc *TestContext) Close() {
 	if tc.CancelFunc != nil {
 		tc.CancelFunc()
 	}
-	tc.Server.Close()
+	tc.MockCtrl.Finish()
 }
 
 // GetSchema returns the resource schema
@@ -71,159 +58,74 @@ func (tc *TestContext) GetSchema() resource.SchemaResponse {
 	return schemaResp
 }
 
-// RecordSetResponseData represents a mock record set response with all fields
-type RecordSetResponseData struct {
-	RecordSetId string
-	Name        string
-	Records     []string
-	TTL         int64
-	Type        string
-	State       string
-	Comment     string
-}
-
-// SetupCreateRecordSetHandler adds a mock handler for CreateRecordSet API
-func (tc *TestContext) SetupCreateRecordSetHandler(recordSetId string, callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}/rrsets", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-
-		resp := dns.RecordSetResponse{
-			Rrset: &dns.RecordSet{
-				Id: utils.Ptr(recordSetId),
-			},
-		}
-		respBytes, _ := json.Marshal(resp)
-		w.Write(respBytes)
-	}).Methods("POST")
-}
-
-// SetupGetRecordSetHandler adds a mock handler for GetRecordSet API
-func (tc *TestContext) SetupGetRecordSetHandler(resp RecordSetResponseData) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}/rrsets/{recordSetId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		// Build records array
-		records := []dns.Record{}
-		for _, content := range resp.Records {
-			records = append(records, dns.Record{
-				Content: utils.Ptr(content),
-			})
-		}
-
-		// Return JSON directly to avoid SDK type complexities
-		jsonResp := fmt.Sprintf(`{
-			"rrset": {
-				"id": "%s",
-				"name": "%s",
-				"type": "%s",
-				"ttl": %d,
-				"state": "%s",
-				"comment": "%s",
-				"active": true,
-				"records": [`,
-			resp.RecordSetId, resp.Name, resp.Type, resp.TTL, resp.State, resp.Comment)
-
-		for i, record := range resp.Records {
-			if i > 0 {
-				jsonResp += ","
-			}
-			jsonResp += fmt.Sprintf(`{"content": "%s"}`, record)
-		}
-
-		jsonResp += `]
-			}
-		}`
-		w.Write([]byte(jsonResp))
-	}).Methods("GET")
-}
-
-// SetupUpdateRecordSetHandler adds a mock handler for PartialUpdateRecordSet API
-func (tc *TestContext) SetupUpdateRecordSetHandler(callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}/rrsets/{recordSetId}", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("{}"))
-	}).Methods("PATCH")
-}
-
-// SetupDeleteRecordSetHandler adds a mock handler for DeleteRecordSet API
-func (tc *TestContext) SetupDeleteRecordSetHandler(callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}/rrsets/{recordSetId}", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("{}"))
-	}).Methods("DELETE")
-}
-
-// SetupDeleteRecordSetHandlerWithStatus adds a mock handler for DeleteRecordSet API with custom status
-func (tc *TestContext) SetupDeleteRecordSetHandlerWithStatus(statusCode int, callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}/rrsets/{recordSetId}", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		if statusCode >= 400 {
-			w.Write([]byte(`{"message": "error"}`))
-		} else {
-			w.Write([]byte("{}"))
-		}
-	}).Methods("DELETE")
-}
-
-// SetupGetRecordSetHandlerWithStatus adds a mock handler for GetRecordSet API with custom status
-func (tc *TestContext) SetupGetRecordSetHandlerWithStatus(statusCode int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}/rrsets/{recordSetId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		if statusCode >= 400 {
-			w.Write([]byte(`{"message": "error"}`))
-		}
-	}).Methods("GET")
-}
-
-// CreateTestModel creates a properly initialized model for testing
-func CreateTestModel(projectId, zoneId, recordSetId, name, recordType string, records []string) Model {
-	recordsList, _ := types.ListValueFrom(context.Background(), types.StringType, records)
-
-	model := Model{
-		ProjectId: types.StringValue(projectId),
-		ZoneId:    types.StringValue(zoneId),
-		Name:      types.StringValue(name),
-		Type:      types.StringValue(recordType),
-		Records:   recordsList,
-		TTL:       types.Int64Value(3600),
-	}
-	if recordSetId != "" {
-		model.RecordSetId = types.StringValue(recordSetId)
-		model.Id = types.StringValue(fmt.Sprintf("%s,%s,%s", projectId, zoneId, recordSetId))
-	}
-	return model
-}
-
-// AssertStateFieldEquals checks a single field in the model
-func AssertStateFieldEquals(t *testing.T, fieldName string, got, want types.String) {
-	t.Helper()
-	if !got.Equal(want) {
-		t.Errorf("%s mismatch: got=%s, want=%s", fieldName, got.ValueString(), want.ValueString())
+// BuildRecordSetResponse creates a dns.RecordSetResponse with full recordset details
+func BuildRecordSetResponse(recordSetId, name, zoneId string, recordType dns.RecordSetTypes, records []string) *dns.RecordSetResponse {
+	return &dns.RecordSetResponse{
+		Rrset: BuildRecordSet(recordSetId, name, zoneId, recordType, records),
 	}
 }
 
-// AssertStateFieldInt64Equals checks a single int64 field in the model
-func AssertStateFieldInt64Equals(t *testing.T, fieldName string, got, want types.Int64) {
-	t.Helper()
-	if !got.Equal(want) {
-		t.Errorf("%s mismatch: got=%d, want=%d", fieldName, got.ValueInt64(), want.ValueInt64())
+// BuildRecordSet creates a dns.RecordSet with the given fields
+func BuildRecordSet(recordSetId, name, zoneId string, recordType dns.RecordSetTypes, records []string) *dns.RecordSet {
+	recordList := make([]dns.Record, len(records))
+	for i, content := range records {
+		recordList[i] = dns.Record{
+			Content: utils.Ptr(content),
+		}
+	}
+
+	return &dns.RecordSet{
+		Id:      utils.Ptr(recordSetId),
+		Name:    utils.Ptr(name),
+		Type:    &recordType,
+		Records: &recordList,
+		Ttl:     utils.Ptr(int64(3600)),
+		Active:  utils.Ptr(true),
+		Comment: utils.Ptr("Test record set"),
+		Error:   utils.Ptr(""),
+		State:   dns.RECORDSETSTATE_CREATING.Ptr(),
+	}
+}
+
+// BuildRecordSetWithMultipleRecords creates a dns.RecordSet with multiple records
+func BuildRecordSetWithMultipleRecords(recordSetId, name, zoneId string, recordType dns.RecordSetTypes, records []string) *dns.RecordSet {
+	return BuildRecordSet(recordSetId, name, zoneId, recordType, records)
+}
+
+// BuildZone creates a dns.Zone for zone validation mocking
+func BuildZone(zoneId, name, dnsName string) *dns.Zone {
+	return &dns.Zone{
+		Id:      utils.Ptr(zoneId),
+		Name:    utils.Ptr(name),
+		DnsName: utils.Ptr(dnsName),
+		Active:  utils.Ptr(true),
+		State:   dns.ZONESTATE_CREATING.Ptr(),
+	}
+}
+
+// BuildZoneResponse creates a dns.ZoneResponse for zone validation mocking
+func BuildZoneResponse(zoneId, name, dnsName string) *dns.ZoneResponse {
+	return &dns.ZoneResponse{
+		Zone: BuildZone(zoneId, name, dnsName),
+	}
+}
+
+// CreateTestModel creates a test model with common values
+func CreateTestModel(projectId, zoneId, recordSetId, name string, recordType dns.RecordSetTypes, records []string) Model {
+	recordValues := make([]attr.Value, len(records))
+	for i, record := range records {
+		recordValues[i] = types.StringValue(record)
+	}
+	recordsList, _ := types.ListValue(types.StringType, recordValues)
+
+	return Model{
+		ProjectId:   types.StringValue(projectId),
+		ZoneId:      types.StringValue(zoneId),
+		RecordSetId: types.StringValue(recordSetId),
+		Name:        types.StringValue(name),
+		Type:        types.StringValue(string(recordType)),
+		Records:     recordsList,
+		TTL:         types.Int64Value(3600),
 	}
 }
 
@@ -249,19 +151,18 @@ func CreateResponse(schema resource.SchemaResponse) *resource.CreateResponse {
 }
 
 // UpdateRequest creates a test Update request
-func UpdateRequest(ctx context.Context, schema resource.SchemaResponse, plan Model, state Model) resource.UpdateRequest {
+func UpdateRequest(ctx context.Context, schema resource.SchemaResponse, currentState, plannedState Model) resource.UpdateRequest {
 	req := resource.UpdateRequest{}
-	req.Plan = tfsdk.Plan{
-		Schema: schema.Schema,
-		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
-	}
-	req.Plan.Set(ctx, plan)
-
 	req.State = tfsdk.State{
 		Schema: schema.Schema,
 		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
 	}
-	req.State.Set(ctx, state)
+	req.Plan = tfsdk.Plan{
+		Schema: schema.Schema,
+		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
+	}
+	req.State.Set(ctx, currentState)
+	req.Plan.Set(ctx, plannedState)
 	return req
 }
 
@@ -320,14 +221,11 @@ func ReadRequest(ctx context.Context, schema resource.SchemaResponse, state Mode
 }
 
 // ReadResponse creates a test Read response
-func ReadResponse(ctx context.Context, schema resource.SchemaResponse, currentState *Model) *resource.ReadResponse {
+func ReadResponse(schema resource.SchemaResponse) *resource.ReadResponse {
 	resp := &resource.ReadResponse{}
 	resp.State = tfsdk.State{
 		Schema: schema.Schema,
 		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
-	}
-	if currentState != nil {
-		resp.State.Set(ctx, *currentState)
 	}
 	return resp
 }

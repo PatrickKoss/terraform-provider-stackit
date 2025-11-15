@@ -2,55 +2,43 @@ package dns
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/gorilla/mux"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
-	"github.com/stackitcloud/stackit-sdk-go/core/config"
+	mock_zone "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/dns/zone/mock"
+	"github.com/stackitcloud/stackit-sdk-go/core/utils"
 	"github.com/stackitcloud/stackit-sdk-go/services/dns"
+	"go.uber.org/mock/gomock"
 )
 
 // TestContext holds common test setup
 type TestContext struct {
 	T          *testing.T
-	Server     *httptest.Server
-	Client     *dns.APIClient
+	MockCtrl   *gomock.Controller
+	MockClient *mock_zone.MockDefaultApi
 	Resource   *zoneResource
-	Router     *mux.Router
 	Ctx        context.Context
 	CancelFunc context.CancelFunc
 }
 
-// NewTestContext creates a new test context with mock server
+// NewTestContext creates a new test context with mock client
 func NewTestContext(t *testing.T) *TestContext {
-	router := mux.NewRouter()
-	server := httptest.NewServer(router)
-
-	client, err := dns.NewAPIClient(
-		config.WithEndpoint(server.URL),
-		config.WithoutAuthentication(),
-	)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
+	ctrl := gomock.NewController(t)
+	mockClient := mock_zone.NewMockDefaultApi(ctrl)
 
 	resource := &zoneResource{
-		client: client,
+		client: mockClient,
 	}
 
 	return &TestContext{
-		T:        t,
-		Server:   server,
-		Client:   client,
-		Resource: resource,
-		Router:   router,
-		Ctx:      context.Background(),
+		T:          t,
+		MockCtrl:   ctrl,
+		MockClient: mockClient,
+		Resource:   resource,
+		Ctx:        context.Background(),
 	}
 }
 
@@ -59,7 +47,7 @@ func (tc *TestContext) Close() {
 	if tc.CancelFunc != nil {
 		tc.CancelFunc()
 	}
-	tc.Server.Close()
+	tc.MockCtrl.Finish()
 }
 
 // GetSchema returns the resource schema
@@ -69,124 +57,62 @@ func (tc *TestContext) GetSchema() resource.SchemaResponse {
 	return schemaResp
 }
 
-// SetupCreateZoneHandler adds mock handler for CreateZone API
-func (tc *TestContext) SetupCreateZoneHandler(zoneId string, callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-
-		// Return minimal JSON to avoid required field issues
-		jsonResp := fmt.Sprintf(`{"zone": {"id": "%s"}}`, zoneId)
-		w.Write([]byte(jsonResp))
-	}).Methods("POST")
+// BuildZoneResponse creates a dns.ZoneResponse with full zone details
+func BuildZoneResponse(zoneId, name, dnsName string) *dns.ZoneResponse {
+	return &dns.ZoneResponse{
+		Zone: BuildZone(zoneId, name, dnsName),
+	}
 }
 
-// SetupGetZoneHandler adds mock handler for GetZone API
-func (tc *TestContext) SetupGetZoneHandler(zoneId, name, dnsName, state string) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		// Return JSON directly to avoid SDK type issues
-		jsonResp := fmt.Sprintf(`{
-			"zone": {
-				"id": "%s",
-				"name": "%s",
-				"dnsName": "%s",
-				"state": "%s",
-				"acl": "0.0.0.0/0,::/0",
-				"creationFinished": "2024-01-01T00:00:00Z",
-				"creationStarted": "2024-01-01T00:00:00Z",
-				"defaultTTL": 3600,
-				"expireTime": 1209600,
-				"negativeCache": 60,
-				"primaryNameServer": "ns1.example.com",
-				"refreshTime": 3600,
-				"retryTime": 600,
-				"serialNumber": 2024010100,
-				"type": "primary",
-				"updateFinished": "2024-01-01T00:00:00Z",
-				"updateStarted": "2024-01-01T00:00:00Z",
-				"visibility": "public"
-			}
-		}`, zoneId, name, dnsName, state)
-		w.Write([]byte(jsonResp))
-	}).Methods("GET")
+// BuildZone creates a dns.Zone with the given fields
+func BuildZone(zoneId, name, dnsName string) *dns.Zone {
+	return &dns.Zone{
+		Id:                utils.Ptr(zoneId),
+		Name:              utils.Ptr(name),
+		DnsName:           utils.Ptr(dnsName),
+		Description:       utils.Ptr("Test zone description"),
+		Acl:               utils.Ptr("0.0.0.0/0"),
+		Active:            utils.Ptr(true),
+		ContactEmail:      utils.Ptr("contact@example.com"),
+		DefaultTTL:        utils.Ptr(int64(3600)),
+		ExpireTime:        utils.Ptr(int64(604800)),
+		IsReverseZone:     utils.Ptr(false),
+		NegativeCache:     utils.Ptr(int64(300)),
+		PrimaryNameServer: utils.Ptr("ns1.example.com"),
+		Primaries:         &[]string{},
+		RecordCount:       utils.Ptr(int64(5)),
+		RefreshTime:       utils.Ptr(int64(86400)),
+		RetryTime:         utils.Ptr(int64(7200)),
+		SerialNumber:      utils.Ptr(int64(1)),
+		Type:              dns.ZONETYPE_PRIMARY.Ptr(),
+		Visibility:        dns.ZONEVISIBILITY_PUBLIC.Ptr(),
+		State:             dns.ZONESTATE_CREATING.Ptr(),
+	}
 }
 
-// SetupUpdateZoneHandler adds mock handler for PartialUpdateZone API
-func (tc *TestContext) SetupUpdateZoneHandler(callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("{}"))
-	}).Methods("PATCH")
+// BuildZoneWithPrimaries creates a dns.Zone with primaries list
+func BuildZoneWithPrimaries(zoneId, name, dnsName string, primaries []string) *dns.Zone {
+	zone := BuildZone(zoneId, name, dnsName)
+	zone.Primaries = &primaries
+	zone.Type = dns.ZONETYPE_SECONDARY.Ptr()
+	return zone
 }
 
-// SetupDeleteZoneHandler adds mock handler for DeleteZone API
-func (tc *TestContext) SetupDeleteZoneHandler(callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("{}"))
-	}).Methods("DELETE")
+// BuildCreateZonePayload creates a CreateZonePayload
+func BuildCreateZonePayload(name, dnsName string) *dns.CreateZonePayload {
+	return &dns.CreateZonePayload{
+		Name:    utils.Ptr(name),
+		DnsName: utils.Ptr(dnsName),
+	}
 }
 
-// SetupDeleteZoneHandlerWithStatus adds mock handler for DeleteZone API with custom status
-func (tc *TestContext) SetupDeleteZoneHandlerWithStatus(statusCode int, callCounter *int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		if callCounter != nil {
-			*callCounter++
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		if statusCode >= 400 {
-			w.Write([]byte(`{"message": "error"}`))
-		} else {
-			w.Write([]byte("{}"))
-		}
-	}).Methods("DELETE")
-}
-
-// SetupGetZoneHandlerWithStatus adds mock handler for GetZone API with custom status
-func (tc *TestContext) SetupGetZoneHandlerWithStatus(statusCode int) {
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		if statusCode >= 400 {
-			w.Write([]byte(`{"message": "error"}`))
-		}
-	}).Methods("GET")
-}
-
-// CreateTestModel creates a properly initialized model for testing
+// CreateTestModel creates a test model with common values
 func CreateTestModel(projectId, zoneId, name, dnsName string) Model {
-	model := Model{
+	return Model{
 		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
-		Primaries: types.ListNull(types.StringType),
-	}
-	if zoneId != "" {
-		model.ZoneId = types.StringValue(zoneId)
-		model.Id = types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId))
-	}
-	return model
-}
-
-// AssertStateFieldEquals checks a single field in the model
-func AssertStateFieldEquals(t *testing.T, fieldName string, got, want types.String) {
-	t.Helper()
-	if !got.Equal(want) {
-		t.Errorf("%s mismatch: got=%s, want=%s", fieldName, got.ValueString(), want.ValueString())
 	}
 }
 
@@ -212,19 +138,18 @@ func CreateResponse(schema resource.SchemaResponse) *resource.CreateResponse {
 }
 
 // UpdateRequest creates a test Update request
-func UpdateRequest(ctx context.Context, schema resource.SchemaResponse, plan Model, state Model) resource.UpdateRequest {
+func UpdateRequest(ctx context.Context, schema resource.SchemaResponse, currentState, plannedState Model) resource.UpdateRequest {
 	req := resource.UpdateRequest{}
-	req.Plan = tfsdk.Plan{
-		Schema: schema.Schema,
-		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
-	}
-	req.Plan.Set(ctx, plan)
-
 	req.State = tfsdk.State{
 		Schema: schema.Schema,
 		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
 	}
-	req.State.Set(ctx, state)
+	req.Plan = tfsdk.Plan{
+		Schema: schema.Schema,
+		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
+	}
+	req.State.Set(ctx, currentState)
+	req.Plan.Set(ctx, plannedState)
 	return req
 }
 
@@ -283,14 +208,11 @@ func ReadRequest(ctx context.Context, schema resource.SchemaResponse, state Mode
 }
 
 // ReadResponse creates a test Read response
-func ReadResponse(ctx context.Context, schema resource.SchemaResponse, currentState *Model) *resource.ReadResponse {
+func ReadResponse(schema resource.SchemaResponse) *resource.ReadResponse {
 	resp := &resource.ReadResponse{}
 	resp.State = tfsdk.State{
 		Schema: schema.Schema,
 		Raw:    tftypes.NewValue(tftypes.DynamicPseudoType, nil),
-	}
-	if currentState != nil {
-		resp.State.Set(ctx, *currentState)
 	}
 	return resp
 }

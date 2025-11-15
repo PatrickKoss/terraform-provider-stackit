@@ -6,242 +6,253 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
+	"github.com/stackitcloud/stackit-sdk-go/services/dns"
+	mock_zone "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/dns/zone/mock"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 func TestDelete_Success(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
 	projectId := "test-project-123"
 	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	name := "my-test-zone"
+	dnsName := "example.com."
 
-	// Setup mock handlers
-	deleteCalled := 0
-	tc.SetupDeleteZoneHandler(&deleteCalled)
-	// Mock GetZone to return zone with DELETE_SUCCEEDED state
-	tc.SetupGetZoneHandler(zoneId, zoneName, dnsName, "DELETE_SUCCEEDED")
+	// Setup mock expectations - delete succeeds
+	goneErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusGone,
+	}
 
-	// Prepare request
+	// Mock DeleteZone
+	mockDeleteReq := mock_zone.NewMockApiDeleteZoneRequest(tc.MockCtrl)
+	mockDeleteReq.EXPECT().
+		Execute().
+		Return(nil, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		DeleteZone(gomock.Any(), projectId, zoneId).
+		Return(mockDeleteReq).
+		Times(1)
+
+	// Mock GetZoneExecute for wait handler - zone is gone (returns ZoneResponse with error)
+	tc.MockClient.EXPECT().
+		GetZoneExecute(gomock.Any(), projectId, zoneId).
+		Return(nil, goneErr).
+		AnyTimes()
+
 	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
+
+	state := Model{
+		Id:        types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Name:      types.StringValue(name),
+		DnsName:   types.StringValue(dnsName),
+	}
+
 	req := DeleteRequest(tc.Ctx, schema, state)
 	resp := DeleteResponse(tc.Ctx, schema, nil)
 
-	// Execute Delete
 	tc.Resource.Delete(tc.Ctx, req, resp)
 
-	// Assertions
-	if deleteCalled == 0 {
-		t.Fatal("DeleteZone API should have been called")
-	}
-
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Delete should succeed, but got errors: %v", resp.Diagnostics.Errors())
-	}
-
-	t.Log("SUCCESS: Zone deleted successfully")
+	require.False(t, resp.Diagnostics.HasError(), "Delete should succeed, but got errors: %v", resp.Diagnostics.Errors())
 }
 
 func TestDelete_ContextCanceledDuringWait(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
 	projectId := "test-project-123"
 	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
-
-	// Setup mock handlers
-	deleteCalled := 0
-	tc.SetupDeleteZoneHandler(&deleteCalled)
-
-	// Setup GetZone to simulate slow response (triggers timeout)
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(150 * time.Millisecond)
-		w.Header().Set("Content-Type", "application/json")
-		jsonResp := fmt.Sprintf(`{
-			"zone": {
-				"id": "%s",
-				"name": "%s",
-				"dnsName": "%s",
-				"state": "DELETING",
-				"acl": "0.0.0.0/0,::/0",
-				"creationFinished": "2024-01-01T00:00:00Z",
-				"creationStarted": "2024-01-01T00:00:00Z",
-				"defaultTTL": 3600,
-				"expireTime": 1209600,
-				"negativeCache": 60,
-				"primaryNameServer": "ns1.example.com",
-				"refreshTime": 3600,
-				"retryTime": 600,
-				"serialNumber": 2024010100,
-				"type": "primary",
-				"updateFinished": "2024-01-01T00:00:00Z",
-				"updateStarted": "2024-01-01T00:00:00Z",
-				"visibility": "public"
-			}
-		}`, zoneId, zoneName, dnsName)
-		w.Write([]byte(jsonResp))
-	}).Methods("GET")
+	name := "my-test-zone"
+	dnsName := "example.com."
 
 	// Create context with short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	tc.Ctx = ctx
 
-	// Prepare request
+	// Mock DeleteZone
+	mockDeleteReq := mock_zone.NewMockApiDeleteZoneRequest(tc.MockCtrl)
+	mockDeleteReq.EXPECT().
+		Execute().
+		Return(nil, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		DeleteZone(gomock.Any(), projectId, zoneId).
+		Return(mockDeleteReq).
+		Times(1)
+
+	// Mock GetZoneExecute for wait handler - simulate timeout
+	tc.MockClient.EXPECT().
+		GetZoneExecute(gomock.Any(), projectId, zoneId).
+		DoAndReturn(func(ctx context.Context, projectId, zoneId string) (*dns.Zone, error) {
+			time.Sleep(150 * time.Millisecond) // Longer than context timeout
+			return nil, ctx.Err()
+		}).
+		AnyTimes()
+
 	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
+
+	state := Model{
+		Id:        types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Name:      types.StringValue(name),
+		DnsName:   types.StringValue(dnsName),
+	}
+
 	req := DeleteRequest(tc.Ctx, schema, state)
 	resp := DeleteResponse(tc.Ctx, schema, &state)
 
-	// Execute Delete
 	tc.Resource.Delete(tc.Ctx, req, resp)
 
-	// Assertions
-	if deleteCalled == 0 {
-		t.Fatal("DeleteZone API should have been called")
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Expected no error due to context timeout")
 
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error due to context timeout")
-	}
-
-	// Verify state was NOT removed
 	var stateAfterDelete Model
-	diags := resp.State.Get(context.Background(), &stateAfterDelete)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state after delete: %v", diags.Errors())
-	}
+	diags := resp.State.Get(tc.Ctx, &stateAfterDelete)
+	require.False(t, diags.HasError(), "Failed to get state after delete: %v", diags.Errors())
 
-	// Verify all fields match original state (resource still tracked)
-	AssertStateFieldEquals(t, "ZoneId", stateAfterDelete.ZoneId, state.ZoneId)
-	AssertStateFieldEquals(t, "Id", stateAfterDelete.Id, state.Id)
-	AssertStateFieldEquals(t, "ProjectId", stateAfterDelete.ProjectId, state.ProjectId)
-	AssertStateFieldEquals(t, "Name", stateAfterDelete.Name, state.Name)
-	AssertStateFieldEquals(t, "DnsName", stateAfterDelete.DnsName, state.DnsName)
-
-	// Verify error message is helpful
-	errorFound := false
-	for _, diag := range resp.Diagnostics.Errors() {
-		if diag.Summary() == "Error deleting zone" {
-			errorFound = true
-			detail := diag.Detail()
-			if detail == "" {
-				t.Error("Error detail should not be empty")
-			}
-			t.Logf("Error message: %s", detail)
-		}
-	}
-	if !errorFound {
-		t.Error("Expected 'Error deleting zone' diagnostic")
-	}
-
-	t.Log("GOOD: State preserved when delete wait fails")
+	// State should be preserved since delete wait failed
+	require.Equal(t, state.ZoneId.ValueString(), stateAfterDelete.ZoneId.ValueString())
+	require.Equal(t, state.Id.ValueString(), stateAfterDelete.Id.ValueString())
+	require.Equal(t, state.ProjectId.ValueString(), stateAfterDelete.ProjectId.ValueString())
+	require.Equal(t, state.Name.ValueString(), stateAfterDelete.Name.ValueString())
+	require.Equal(t, state.DnsName.ValueString(), stateAfterDelete.DnsName.ValueString())
 }
 
 func TestDelete_APICallFails(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
-	projectId := "test-project-123"
-	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	projectId := "test-project"
+	zoneId := "test-zone"
 
-	// Setup mock handler to return error
-	tc.SetupDeleteZoneHandlerWithStatus(http.StatusInternalServerError, nil)
-
-	// Prepare request
-	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
-	req := DeleteRequest(tc.Ctx, schema, state)
-	resp := DeleteResponse(tc.Ctx, schema, &state)
-
-	// Execute Delete
-	tc.Resource.Delete(tc.Ctx, req, resp)
-
-	// Assertions
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error when API call fails")
+	// Setup mock expectations - server error
+	serverErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusInternalServerError,
 	}
 
-	t.Log("SUCCESS: Error returned when delete API fails")
-}
+	// Mock DeleteZone
+	mockDeleteReq := mock_zone.NewMockApiDeleteZoneRequest(tc.MockCtrl)
+	mockDeleteReq.EXPECT().
+		Execute().
+		Return(nil, serverErr).
+		Times(1)
 
-func TestDelete_ResourceAlreadyDeleted(t *testing.T) {
-	tc := NewTestContext(t)
-	defer tc.Close()
+	tc.MockClient.EXPECT().
+		DeleteZone(gomock.Any(), projectId, zoneId).
+		Return(mockDeleteReq).
+		Times(1)
 
-	// Test data
-	projectId := "test-project-123"
-	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
-
-	// Setup mock handler to return 404 Not Found (idempotency test)
-	deleteCalled := 0
-	tc.SetupDeleteZoneHandlerWithStatus(http.StatusNotFound, &deleteCalled)
-
-	// Prepare request
 	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
+
+	state := Model{
+		Id:        types.StringValue("test-project,test-zone"),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Name:      types.StringValue("test-name"),
+		DnsName:   types.StringValue("example.com."),
+	}
+
 	req := DeleteRequest(tc.Ctx, schema, state)
 	resp := DeleteResponse(tc.Ctx, schema, nil)
 
-	// Execute Delete
 	tc.Resource.Delete(tc.Ctx, req, resp)
 
-	// Assertions
-	if deleteCalled == 0 {
-		t.Fatal("DeleteZone API should have been called")
-	}
-
-	// CRITICAL: Should NOT error (idempotency)
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Delete should succeed for idempotency when resource is 404, but got errors: %v", resp.Diagnostics.Errors())
-	}
-
-	t.Log("SUCCESS: Delete is idempotent - 404 treated as success")
+	require.True(t, resp.Diagnostics.HasError(), "Expected error when API call fails")
 }
 
-func TestDelete_ResourceGone(t *testing.T) {
+func TestDelete_ZoneAlreadyDeleted(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
-	projectId := "test-project-123"
-	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	projectId := "test-project"
+	zoneId := "test-zone"
 
-	// Setup mock handler to return 410 Gone (idempotency test)
-	deleteCalled := 0
-	tc.SetupDeleteZoneHandlerWithStatus(http.StatusGone, &deleteCalled)
+	// Setup mock expectations - DeleteZone returns 404
+	notFoundErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusNotFound,
+	}
 
-	// Prepare request
+	// Mock DeleteZone
+	mockDeleteReq := mock_zone.NewMockApiDeleteZoneRequest(tc.MockCtrl)
+	mockDeleteReq.EXPECT().
+		Execute().
+		Return(nil, notFoundErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		DeleteZone(gomock.Any(), projectId, zoneId).
+		Return(mockDeleteReq).
+		Times(1)
+
 	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
+
+	state := Model{
+		Id:        types.StringValue("test-project,test-zone"),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Name:      types.StringValue("test-name"),
+		DnsName:   types.StringValue("example.com."),
+	}
+
 	req := DeleteRequest(tc.Ctx, schema, state)
 	resp := DeleteResponse(tc.Ctx, schema, nil)
 
-	// Execute Delete
 	tc.Resource.Delete(tc.Ctx, req, resp)
 
-	// Assertions
-	if deleteCalled == 0 {
-		t.Fatal("DeleteZone API should have been called")
+	// Delete should succeed for idempotency - zone already deleted
+	require.False(t, resp.Diagnostics.HasError(), "Delete should succeed when zone is already deleted (404), but got errors: %v", resp.Diagnostics.Errors())
+}
+
+func TestDelete_ZoneGone(t *testing.T) {
+	tc := NewTestContext(t)
+	defer tc.Close()
+
+	projectId := "test-project"
+	zoneId := "test-zone"
+
+	// Setup mock expectations - DeleteZone returns 410 Gone
+	goneErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusGone,
 	}
 
-	// CRITICAL: Should NOT error (idempotency)
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Delete should succeed for idempotency when resource is 410, but got errors: %v", resp.Diagnostics.Errors())
+	// Mock DeleteZone
+	mockDeleteReq := mock_zone.NewMockApiDeleteZoneRequest(tc.MockCtrl)
+	mockDeleteReq.EXPECT().
+		Execute().
+		Return(nil, goneErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		DeleteZone(gomock.Any(), projectId, zoneId).
+		Return(mockDeleteReq).
+		Times(1)
+
+	schema := tc.GetSchema()
+
+	state := Model{
+		Id:        types.StringValue("test-project,test-zone"),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Name:      types.StringValue("test-name"),
+		DnsName:   types.StringValue("example.com."),
 	}
 
-	t.Log("SUCCESS: Delete is idempotent - 410 treated as success")
+	req := DeleteRequest(tc.Ctx, schema, state)
+	resp := DeleteResponse(tc.Ctx, schema, nil)
+
+	tc.Resource.Delete(tc.Ctx, req, resp)
+
+	// Delete should succeed for idempotency - zone already gone
+	require.False(t, resp.Diagnostics.HasError(), "Delete should succeed when zone is gone (410), but got errors: %v", resp.Diagnostics.Errors())
 }

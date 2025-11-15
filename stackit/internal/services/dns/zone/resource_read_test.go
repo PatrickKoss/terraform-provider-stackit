@@ -5,220 +5,312 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
+	"github.com/stackitcloud/stackit-sdk-go/core/utils"
+	"github.com/stackitcloud/stackit-sdk-go/services/dns"
+	mock_zone "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/dns/zone/mock"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 func TestRead_Success(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
 	projectId := "test-project-123"
 	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	name := "my-test-zone"
+	dnsName := "example.com."
 
-	// Setup mock handler
-	tc.SetupGetZoneHandler(zoneId, zoneName, dnsName, "CREATE_SUCCEEDED")
+	// Setup mock expectations
+	zoneResp := BuildZoneResponse(zoneId, name, dnsName)
 
-	// Prepare request
+	// Mock GetZone
+	mockGetReq := mock_zone.NewMockApiGetZoneRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(zoneResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetZone(gomock.Any(), projectId, zoneId).
+		Return(mockGetReq).
+		Times(1)
+
 	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
-	req := ReadRequest(tc.Ctx, schema, state)
-	resp := ReadResponse(tc.Ctx, schema, &state)
 
-	// Execute Read
+	state := Model{
+		Id:        types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		// Other fields may be outdated or null
+		Name:      types.StringNull(),
+		DnsName:   types.StringNull(),
+		Primaries: types.ListNull(types.StringType),
+	}
+
+	req := ReadRequest(tc.Ctx, schema, state)
+	resp := ReadResponse(schema)
+
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	// Assertions
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
 
-	// Extract final state
-	var finalState Model
-	diags := resp.State.Get(tc.Ctx, &finalState)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state: %v", diags.Errors())
-	}
+	var refreshedState Model
+	diags := resp.State.Get(tc.Ctx, &refreshedState)
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
 
-	// Verify all fields
-	AssertStateFieldEquals(t, "ZoneId", finalState.ZoneId, types.StringValue(zoneId))
-	AssertStateFieldEquals(t, "Name", finalState.Name, types.StringValue(zoneName))
-	AssertStateFieldEquals(t, "DnsName", finalState.DnsName, types.StringValue(dnsName))
-	AssertStateFieldEquals(t, "State", finalState.State, types.StringValue("CREATE_SUCCEEDED"))
+	require.Equal(t, zoneId, refreshedState.ZoneId.ValueString())
+	require.Equal(t, fmt.Sprintf("%s,%s", projectId, zoneId), refreshedState.Id.ValueString())
+	require.Equal(t, projectId, refreshedState.ProjectId.ValueString())
+	require.Equal(t, name, refreshedState.Name.ValueString())
+	require.Equal(t, dnsName, refreshedState.DnsName.ValueString())
 
-	t.Log("SUCCESS: All state fields correctly populated")
+	require.False(t, refreshedState.Active.IsNull(), "Active should be set from API response")
+	require.False(t, refreshedState.State.IsNull(), "State should be set from API response")
 }
 
-func TestRead_ResourceNotFound(t *testing.T) {
+func TestRead_ZoneNotFound(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
 	projectId := "test-project-123"
-	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	zoneId := "non-existent-zone"
 
-	// Setup mock handler to return 404
-	tc.SetupGetZoneHandlerWithStatus(http.StatusNotFound)
-
-	// Prepare request
-	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
-	req := ReadRequest(tc.Ctx, schema, state)
-	resp := ReadResponse(tc.Ctx, schema, &state)
-
-	// Execute Read
-	tc.Resource.Read(tc.Ctx, req, resp)
-
-	// Assertions - should error (404 in Read is not automatically handled by the resource)
-	// The error handling for 404 in Read depends on the specific implementation
-	// In this case, the DNS zone resource logs an error for 404
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error when zone is not found (404)")
+	// Setup GetZone to return 404
+	notFoundErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusNotFound,
 	}
 
-	t.Log("SUCCESS: Error returned when zone is 404")
+	// Mock GetZone
+	mockGetReq := mock_zone.NewMockApiGetZoneRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(nil, notFoundErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetZone(gomock.Any(), projectId, zoneId).
+		Return(mockGetReq).
+		Times(1)
+
+	schema := tc.GetSchema()
+
+	state := Model{
+		Id:        types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Primaries: types.ListNull(types.StringType),
+	}
+
+	req := ReadRequest(tc.Ctx, schema, state)
+	resp := ReadResponse(schema)
+
+	tc.Resource.Read(tc.Ctx, req, resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "Read should not error when zone not found, but got errors: %v", resp.Diagnostics.Errors())
 }
 
-func TestRead_ResourceGone(t *testing.T) {
+func TestRead_ZoneGone(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
 	projectId := "test-project-123"
-	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	zoneId := "gone-zone"
 
-	// Setup mock handler to return zone with DELETE_SUCCEEDED state
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		jsonResp := fmt.Sprintf(`{
-			"zone": {
-				"id": "%s",
-				"name": "%s",
-				"dnsName": "%s",
-				"state": "DELETE_SUCCEEDED",
-				"acl": "0.0.0.0/0,::/0",
-				"creationFinished": "2024-01-01T00:00:00Z",
-				"creationStarted": "2024-01-01T00:00:00Z",
-				"defaultTTL": 3600,
-				"expireTime": 1209600,
-				"negativeCache": 60,
-				"primaryNameServer": "ns1.example.com",
-				"refreshTime": 3600,
-				"retryTime": 600,
-				"serialNumber": 2024010100,
-				"type": "primary",
-				"updateFinished": "2024-01-01T00:00:00Z",
-				"updateStarted": "2024-01-01T00:00:00Z",
-				"visibility": "public"
-			}
-		}`, zoneId, zoneName, dnsName)
-		w.Write([]byte(jsonResp))
-	}).Methods("GET")
+	// Setup GetZone to return 410 Gone
+	goneErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusGone,
+	}
 
-	// Prepare request
+	// Mock GetZone
+	mockGetReq := mock_zone.NewMockApiGetZoneRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(nil, goneErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetZone(gomock.Any(), projectId, zoneId).
+		Return(mockGetReq).
+		Times(1)
+
 	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
-	req := ReadRequest(tc.Ctx, schema, state)
-	resp := ReadResponse(tc.Ctx, schema, &state)
 
-	// Execute Read
+	state := Model{
+		Id:        types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Primaries: types.ListNull(types.StringType),
+	}
+
+	req := ReadRequest(tc.Ctx, schema, state)
+	resp := ReadResponse(schema)
+
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	// Assertions - should not error, state should be removed
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should succeed when zone is DELETE_SUCCEEDED, but got errors: %v", resp.Diagnostics.Errors())
-	}
-
-	// Verify state was removed (IsNull check on a required field)
-	var finalState Model
-	diags := resp.State.Get(tc.Ctx, &finalState)
-	if diags.HasError() {
-		t.Logf("State was removed (expected): %v", diags)
-	}
-
-	// Check if state is empty by checking a required field
-	if !finalState.ZoneId.IsNull() && finalState.ZoneId.ValueString() != "" {
-		t.Error("State should be removed when zone is DELETE_SUCCEEDED")
-	}
-
-	t.Log("SUCCESS: State removed when zone is DELETE_SUCCEEDED")
+	require.False(t, resp.Diagnostics.HasError(), "Read should not error when zone is gone, but got errors: %v", resp.Diagnostics.Errors())
 }
 
 func TestRead_APICallFails(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
-	projectId := "test-project-123"
-	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	projectId := "test-project"
+	zoneId := "test-zone"
 
-	// Setup mock handler to return error
-	tc.SetupGetZoneHandlerWithStatus(http.StatusInternalServerError)
-
-	// Prepare request
-	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, zoneName, dnsName)
-	req := ReadRequest(tc.Ctx, schema, state)
-	resp := ReadResponse(tc.Ctx, schema, &state)
-
-	// Execute Read
-	tc.Resource.Read(tc.Ctx, req, resp)
-
-	// Assertions
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error when API call fails")
+	// Setup GetZone to return 500 error
+	serverErr := &oapierror.GenericOpenAPIError{
+		StatusCode: http.StatusInternalServerError,
 	}
 
-	t.Log("SUCCESS: Error returned when read API fails")
+	// Mock GetZone
+	mockGetReq := mock_zone.NewMockApiGetZoneRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(nil, serverErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetZone(gomock.Any(), projectId, zoneId).
+		Return(mockGetReq).
+		Times(1)
+
+	schema := tc.GetSchema()
+
+	state := Model{
+		Id:        types.StringValue("test-project,test-zone"),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+	}
+
+	req := ReadRequest(tc.Ctx, schema, state)
+	resp := ReadResponse(schema)
+
+	tc.Resource.Read(tc.Ctx, req, resp)
+
+	require.True(t, resp.Diagnostics.HasError(), "Expected error when API call fails")
 }
 
 func TestRead_DetectDrift(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
 	projectId := "test-project-123"
 	zoneId := "zone-abc-123"
-	oldName := "my-old-zone"
-	newName := "my-new-zone"
-	dnsName := "example.com"
+	name := "my-test-zone"
+	dnsName := "example.com."
 
-	// Setup mock handler with updated values
-	tc.SetupGetZoneHandler(zoneId, newName, dnsName, "UPDATE_SUCCEEDED")
+	// Setup mock expectations - zone ACL and DefaultTTL changed in cloud
+	zone := BuildZone(zoneId, name, dnsName)
+	zone.Acl = utils.Ptr("192.168.0.0/16")      // ACL changed
+	zone.DefaultTTL = utils.Ptr(int64(7200))    // TTL changed
+	zoneResp := &dns.ZoneResponse{Zone: zone}
 
-	// Prepare request with old state
+	// Mock GetZone - returns drifted state
+	mockGetReq := mock_zone.NewMockApiGetZoneRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(zoneResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetZone(gomock.Any(), projectId, zoneId).
+		Return(mockGetReq).
+		Times(1)
+
 	schema := tc.GetSchema()
-	state := CreateTestModel(projectId, zoneId, oldName, dnsName)
-	state.State = types.StringValue("CREATE_SUCCEEDED")
-	req := ReadRequest(tc.Ctx, schema, state)
-	resp := ReadResponse(tc.Ctx, schema, &state)
 
-	// Execute Read
+	state := Model{
+		Id:         types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)),
+		ProjectId:  types.StringValue(projectId),
+		ZoneId:     types.StringValue(zoneId),
+		Name:       types.StringValue(name),
+		DnsName:    types.StringValue(dnsName),
+		Acl:        types.StringValue("0.0.0.0/0"),       // Old value
+		DefaultTTL: types.Int64Value(3600),               // Old value
+		Primaries:  types.ListNull(types.StringType),
+	}
+
+	req := ReadRequest(tc.Ctx, schema, state)
+	resp := ReadResponse(schema)
+
 	tc.Resource.Read(tc.Ctx, req, resp)
 
-	// Assertions
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
+	require.False(t, resp.Diagnostics.HasError(), "Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
+
+	var refreshedState Model
+	diags := resp.State.Get(tc.Ctx, &refreshedState)
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
+
+	// Verify drift was detected and state was updated
+	require.Equal(t, "192.168.0.0/16", refreshedState.Acl.ValueString())
+	require.Equal(t, int64(7200), refreshedState.DefaultTTL.ValueInt64())
+}
+
+func TestRead_PrimariesOrderPreserved(t *testing.T) {
+	tc := NewTestContext(t)
+	defer tc.Close()
+
+	projectId := "test-project-123"
+	zoneId := "zone-abc-123"
+	name := "my-test-zone"
+	dnsName := "example.com."
+	primaries := []string{"192.168.1.1", "192.168.1.2", "192.168.1.3"}
+
+	// Setup mock expectations with primaries
+	zone := BuildZoneWithPrimaries(zoneId, name, dnsName, primaries)
+	zoneResp := &dns.ZoneResponse{Zone: zone}
+
+	// Mock GetZone
+	mockGetReq := mock_zone.NewMockApiGetZoneRequest(tc.MockCtrl)
+	mockGetReq.EXPECT().
+		Execute().
+		Return(zoneResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		GetZone(gomock.Any(), projectId, zoneId).
+		Return(mockGetReq).
+		Times(1)
+
+	schema := tc.GetSchema()
+
+	// State with primaries in different order
+	differentOrderPrimaries := []string{"192.168.1.3", "192.168.1.1", "192.168.1.2"}
+	primaryValues := make([]attr.Value, len(differentOrderPrimaries))
+	for i, p := range differentOrderPrimaries {
+		primaryValues[i] = types.StringValue(p)
+	}
+	primaryList, _ := types.ListValue(types.StringType, primaryValues)
+
+	state := Model{
+		Id:        types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)),
+		ProjectId: types.StringValue(projectId),
+		ZoneId:    types.StringValue(zoneId),
+		Name:      types.StringValue(name),
+		DnsName:   types.StringValue(dnsName),
+		Primaries: primaryList,
 	}
 
-	// Extract final state
-	var finalState Model
-	diags := resp.State.Get(tc.Ctx, &finalState)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state: %v", diags.Errors())
-	}
+	req := ReadRequest(tc.Ctx, schema, state)
+	resp := ReadResponse(schema)
 
-	// Verify state updated with new values (drift detected)
-	AssertStateFieldEquals(t, "Name", finalState.Name, types.StringValue(newName))
-	AssertStateFieldEquals(t, "State", finalState.State, types.StringValue("UPDATE_SUCCEEDED"))
+	tc.Resource.Read(tc.Ctx, req, resp)
 
-	t.Log("SUCCESS: Drift detected and state updated with new values")
+	require.False(t, resp.Diagnostics.HasError(), "Read should succeed, but got errors: %v", resp.Diagnostics.Errors())
+
+	var refreshedState Model
+	diags := resp.State.Get(tc.Ctx, &refreshedState)
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
+
+	// Verify primaries order matches API response (not state order)
+	require.False(t, refreshedState.Primaries.IsNull(), "Primaries should be set")
+
+	var statePrimaries []string
+	diags = refreshedState.Primaries.ElementsAs(tc.Ctx, &statePrimaries, false)
+	require.False(t, diags.HasError(), "Failed to get primaries: %v", diags.Errors())
+	require.Equal(t, primaries, statePrimaries, "Primaries order should match API response")
 }

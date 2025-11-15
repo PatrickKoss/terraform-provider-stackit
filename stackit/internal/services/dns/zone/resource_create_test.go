@@ -3,96 +3,17 @@ package dns
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/stackitcloud/stackit-sdk-go/core/utils"
+	"github.com/stackitcloud/stackit-sdk-go/services/dns"
+	mock_zone "github.com/stackitcloud/terraform-provider-stackit/stackit/internal/services/dns/zone/mock"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
-
-func TestCreate_ContextCanceledDuringWait(t *testing.T) {
-	tc := NewTestContext(t)
-	defer tc.Close()
-
-	// Test data
-	projectId := "test-project-123"
-	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
-
-	// Setup mock handlers
-	createCalled := 0
-	tc.SetupCreateZoneHandler(zoneId, &createCalled)
-
-	// Setup GetZone to simulate slow response (triggers timeout)
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones/{zoneId}", func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(150 * time.Millisecond)
-		w.Header().Set("Content-Type", "application/json")
-		jsonResp := fmt.Sprintf(`{
-			"zone": {
-				"id": "%s",
-				"name": "%s",
-				"dnsName": "%s",
-				"state": "CREATING",
-				"acl": "0.0.0.0/0,::/0",
-				"creationFinished": "2024-01-01T00:00:00Z",
-				"creationStarted": "2024-01-01T00:00:00Z",
-				"defaultTTL": 3600,
-				"expireTime": 1209600,
-				"negativeCache": 60,
-				"primaryNameServer": "ns1.example.com",
-				"refreshTime": 3600,
-				"retryTime": 600,
-				"serialNumber": 2024010100,
-				"type": "primary",
-				"updateFinished": "2024-01-01T00:00:00Z",
-				"updateStarted": "2024-01-01T00:00:00Z",
-				"visibility": "public"
-			}
-		}`, zoneId, zoneName, dnsName)
-		w.Write([]byte(jsonResp))
-	}).Methods("GET")
-
-	// Create context with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	tc.Ctx = ctx
-
-	// Prepare request
-	schema := tc.GetSchema()
-	model := CreateTestModel(projectId, "", zoneName, dnsName)
-	req := CreateRequest(tc.Ctx, schema, model)
-	resp := CreateResponse(schema)
-
-	// Execute Create
-	tc.Resource.Create(tc.Ctx, req, resp)
-
-	// Assertions
-	if createCalled == 0 {
-		t.Fatal("CreateZone API should have been called")
-	}
-
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error due to context timeout")
-	}
-
-	// CRITICAL: Verify zone_id was saved
-	var stateAfterCreate Model
-	diags := resp.State.Get(context.Background(), &stateAfterCreate)
-	if diags.HasError() {
-		t.Logf("Warnings getting state: %v", diags)
-	}
-
-	// Verify idempotency fix
-	if stateAfterCreate.ZoneId.IsNull() || stateAfterCreate.ZoneId.ValueString() == "" {
-		t.Fatal("BUG: ZoneId should be saved to state immediately after API succeeds")
-	}
-
-	AssertStateFieldEquals(t, "ZoneId", stateAfterCreate.ZoneId, types.StringValue(zoneId))
-	AssertStateFieldEquals(t, "Id", stateAfterCreate.Id, types.StringValue(fmt.Sprintf("%s,%s", projectId, zoneId)))
-
-	t.Log("GOOD: ZoneId saved even though wait failed - idempotency guaranteed")
-}
 
 func TestCreate_Success(t *testing.T) {
 	tc := NewTestContext(t)
@@ -101,17 +22,104 @@ func TestCreate_Success(t *testing.T) {
 	// Test data
 	projectId := "test-project-123"
 	zoneId := "zone-abc-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	name := "my-test-zone"
+	dnsName := "example.com."
 
-	// Setup mock handlers
-	createCalled := 0
-	tc.SetupCreateZoneHandler(zoneId, &createCalled)
-	tc.SetupGetZoneHandler(zoneId, zoneName, dnsName, "CREATE_SUCCEEDED")
+	// Setup mock expectations
+	zoneResp := BuildZoneResponse(zoneId, name, dnsName)
+
+	// Mock CreateZone
+	mockCreateReq := mock_zone.NewMockApiCreateZoneRequest(tc.MockCtrl)
+	mockCreateReq.EXPECT().
+		CreateZonePayload(gomock.Any()).
+		Return(mockCreateReq).
+		Times(1)
+	mockCreateReq.EXPECT().
+		Execute().
+		Return(zoneResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		CreateZone(gomock.Any(), projectId).
+		Return(mockCreateReq).
+		Times(1)
+
+	// Mock GetZoneExecute for wait handler (wait handler calls this directly, not fluent API)
+	tc.MockClient.EXPECT().
+		GetZoneExecute(gomock.Any(), projectId, zoneId).
+		Return(zoneResp, nil).
+		AnyTimes()
 
 	// Prepare request
 	schema := tc.GetSchema()
-	model := CreateTestModel(projectId, "", zoneName, dnsName)
+	model := CreateTestModel(projectId, "", name, dnsName)
+	req := CreateRequest(tc.Ctx, schema, model)
+	resp := CreateResponse(schema)
+
+	tc.Resource.Create(tc.Ctx, req, resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "Create should succeed, but got errors: %v", resp.Diagnostics.Errors())
+
+	var finalState Model
+	diags := resp.State.Get(tc.Ctx, &finalState)
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
+
+	// Verify all fields match what was returned from GetZone
+	require.Equal(t, zoneId, finalState.ZoneId.ValueString())
+	require.Equal(t, fmt.Sprintf("%s,%s", projectId, zoneId), finalState.Id.ValueString())
+	require.Equal(t, projectId, finalState.ProjectId.ValueString())
+	require.Equal(t, name, finalState.Name.ValueString())
+	require.Equal(t, dnsName, finalState.DnsName.ValueString())
+	require.False(t, finalState.Active.IsNull(), "Active should be set from API response")
+	require.False(t, finalState.State.IsNull(), "State should be set from API response")
+}
+
+func TestCreate_ContextCanceledDuringWait(t *testing.T) {
+	tc := NewTestContext(t)
+	defer tc.Close()
+
+	// Test data
+	projectId := "test-project-123"
+	zoneId := "zone-abc-123"
+	name := "my-test-zone"
+	dnsName := "example.com."
+
+	// Setup mock expectations
+	zoneResp := BuildZoneResponse(zoneId, name, dnsName)
+
+	// Create context with short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	tc.Ctx = ctx
+
+	// Mock CreateZone
+	mockCreateReq := mock_zone.NewMockApiCreateZoneRequest(tc.MockCtrl)
+	mockCreateReq.EXPECT().
+		CreateZonePayload(gomock.Any()).
+		Return(mockCreateReq).
+		Times(1)
+	mockCreateReq.EXPECT().
+		Execute().
+		Return(zoneResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		CreateZone(gomock.Any(), projectId).
+		Return(mockCreateReq).
+		Times(1)
+
+	// Mock GetZoneExecute for wait handler - simulate timeout
+	tc.MockClient.EXPECT().
+		GetZoneExecute(gomock.Any(), projectId, zoneId).
+		DoAndReturn(func(ctx context.Context, projectId, zoneId string) (*dns.Zone, error) {
+			time.Sleep(150 * time.Millisecond) // Longer than context timeout
+			return nil, ctx.Err()
+		}).
+		AnyTimes()
+
+	// Prepare request
+	schema := tc.GetSchema()
+	model := CreateTestModel(projectId, "", name, dnsName)
 	req := CreateRequest(tc.Ctx, schema, model)
 	resp := CreateResponse(schema)
 
@@ -119,70 +127,216 @@ func TestCreate_Success(t *testing.T) {
 	tc.Resource.Create(tc.Ctx, req, resp)
 
 	// Assertions
-	if createCalled == 0 {
-		t.Fatal("CreateZone API should have been called")
-	}
+	require.False(t, resp.Diagnostics.HasError(), "Expected no error due to context timeout")
 
-	if resp.Diagnostics.HasError() {
-		t.Fatalf("Create should succeed, but got errors: %v", resp.Diagnostics.Errors())
-	}
+	var stateAfterCreate Model
+	diags := resp.State.Get(tc.Ctx, &stateAfterCreate)
+	require.False(t, diags.HasError(), "Expected no errors reading state")
 
-	// Extract final state
-	var finalState Model
-	diags := resp.State.Get(tc.Ctx, &finalState)
-	if diags.HasError() {
-		t.Fatalf("Failed to get state: %v", diags.Errors())
-	}
+	// Verify idempotency - ZoneId should be saved immediately after CreateZone succeeds
+	require.False(t, stateAfterCreate.ZoneId.IsNull(), "BUG: ZoneId should be saved to state immediately after CreateZone API succeeds")
+	require.NotEmpty(t, stateAfterCreate.ZoneId.ValueString(), "ZoneId should not be empty")
 
-	// Verify all fields
-	AssertStateFieldEquals(t, "ZoneId", finalState.ZoneId, types.StringValue(zoneId))
-	AssertStateFieldEquals(t, "Name", finalState.Name, types.StringValue(zoneName))
-	AssertStateFieldEquals(t, "DnsName", finalState.DnsName, types.StringValue(dnsName))
-	AssertStateFieldEquals(t, "State", finalState.State, types.StringValue("CREATE_SUCCEEDED"))
+	// Verify basic fields from input/CreateZone response are set
+	require.Equal(t, zoneId, stateAfterCreate.ZoneId.ValueString())
+	require.Equal(t, fmt.Sprintf("%s,%s", projectId, zoneId), stateAfterCreate.Id.ValueString())
+	require.Equal(t, projectId, stateAfterCreate.ProjectId.ValueString())
+	require.Equal(t, name, stateAfterCreate.Name.ValueString())
+	require.Equal(t, dnsName, stateAfterCreate.DnsName.ValueString())
 
-	t.Log("SUCCESS: All state fields correctly populated")
+	// CRITICAL: Verify fields that require GetZone are NULL after failed wait
+	require.True(t, stateAfterCreate.State.IsNull(), "State should be null after failed wait (only GetZone provides this)")
+	require.True(t, stateAfterCreate.RecordCount.IsNull(), "RecordCount should be null after failed wait (only GetZone provides this)")
+	require.True(t, stateAfterCreate.SerialNumber.IsNull(), "SerialNumber should be null after failed wait (only GetZone provides this)")
 }
 
 func TestCreate_APICallFails(t *testing.T) {
 	tc := NewTestContext(t)
 	defer tc.Close()
 
-	// Test data
-	projectId := "test-project-123"
-	zoneName := "my-test-zone"
-	dnsName := "example.com"
+	projectId := "test-project"
+	name := "test-zone"
+	dnsName := "example.com."
 
-	// Setup mock handler to return error
-	tc.Router.HandleFunc("/v1/projects/{projectId}/zones", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"message": "Internal server error"}`))
-	}).Methods("POST")
+	// Setup mock expectations - CreateZone fails
+	apiErr := fmt.Errorf("API error")
 
-	// Prepare request
+	mockCreateReq := mock_zone.NewMockApiCreateZoneRequest(tc.MockCtrl)
+	mockCreateReq.EXPECT().
+		CreateZonePayload(gomock.Any()).
+		Return(mockCreateReq).
+		Times(1)
+	mockCreateReq.EXPECT().
+		Execute().
+		Return(nil, apiErr).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		CreateZone(gomock.Any(), projectId).
+		Return(mockCreateReq).
+		Times(1)
+
 	schema := tc.GetSchema()
-	model := CreateTestModel(projectId, "", zoneName, dnsName)
+	model := CreateTestModel(projectId, "", name, dnsName)
 	req := CreateRequest(tc.Ctx, schema, model)
 	resp := CreateResponse(schema)
 
-	// Execute Create
 	tc.Resource.Create(tc.Ctx, req, resp)
 
-	// Assertions
-	if !resp.Diagnostics.HasError() {
-		t.Fatal("Expected error when API call fails")
-	}
+	require.True(t, resp.Diagnostics.HasError(), "Expected error when API call fails")
 
-	// Verify ZoneId is null (nothing created)
+	// State should be empty since zone was never created
 	var stateAfterCreate Model
-	diags := resp.State.Get(tc.Ctx, &stateAfterCreate)
-	if diags.HasError() {
-		t.Logf("Warnings getting state: %v", diags)
-	}
+	resp.State.Get(tc.Ctx, &stateAfterCreate)
 
-	if !stateAfterCreate.ZoneId.IsNull() && stateAfterCreate.ZoneId.ValueString() != "" {
-		t.Error("ZoneId should be null when API call fails")
-	}
+	require.True(t, stateAfterCreate.ZoneId.IsNull(), "ZoneId should be null when API call fails")
+}
 
-	t.Log("SUCCESS: ZoneId is null when create fails")
+func TestCreate_WithPrimaries(t *testing.T) {
+	tc := NewTestContext(t)
+	defer tc.Close()
+
+	// Test data
+	projectId := "test-project-123"
+	zoneId := "zone-abc-123"
+	name := "my-test-zone"
+	dnsName := "example.com."
+	primaries := []string{"192.168.1.1", "192.168.1.2", "192.168.1.3"}
+
+	// Setup mock expectations
+	zone := BuildZoneWithPrimaries(zoneId, name, dnsName, primaries)
+	zoneResp := &dns.ZoneResponse{Zone: zone}
+
+	// Mock CreateZone
+	mockCreateReq := mock_zone.NewMockApiCreateZoneRequest(tc.MockCtrl)
+	mockCreateReq.EXPECT().
+		CreateZonePayload(gomock.Any()).
+		Return(mockCreateReq).
+		Times(1)
+	mockCreateReq.EXPECT().
+		Execute().
+		Return(zoneResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		CreateZone(gomock.Any(), projectId).
+		Return(mockCreateReq).
+		Times(1)
+
+	// Mock GetZoneExecute for wait handler
+	tc.MockClient.EXPECT().
+		GetZoneExecute(gomock.Any(), projectId, zoneId).
+		Return(&dns.ZoneResponse{Zone: zone}, nil).
+		AnyTimes()
+
+	// Prepare request with primaries
+	schema := tc.GetSchema()
+	model := CreateTestModel(projectId, "", name, dnsName)
+
+	// Add primaries to model
+	primaryValues := make([]attr.Value, len(primaries))
+	for i, p := range primaries {
+		primaryValues[i] = types.StringValue(p)
+	}
+	primaryList, _ := types.ListValue(types.StringType, primaryValues)
+	model.Primaries = primaryList
+	model.Type = types.StringValue(string(dns.ZONETYPE_SECONDARY))
+
+	req := CreateRequest(tc.Ctx, schema, model)
+	resp := CreateResponse(schema)
+
+	tc.Resource.Create(tc.Ctx, req, resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "Create should succeed, but got errors: %v", resp.Diagnostics.Errors())
+
+	var finalState Model
+	diags := resp.State.Get(tc.Ctx, &finalState)
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
+
+	// Verify primaries list order is preserved
+	require.False(t, finalState.Primaries.IsNull(), "Primaries should be set")
+
+	var statePrimaries []string
+	diags = finalState.Primaries.ElementsAs(tc.Ctx, &statePrimaries, false)
+	require.False(t, diags.HasError(), "Failed to get primaries: %v", diags.Errors())
+	require.Equal(t, primaries, statePrimaries, "Primaries order should be preserved")
+}
+
+func TestCreate_WithAllOptionalFields(t *testing.T) {
+	tc := NewTestContext(t)
+	defer tc.Close()
+
+	// Test data
+	projectId := "test-project-123"
+	zoneId := "zone-abc-123"
+	name := "my-test-zone"
+	dnsName := "example.com."
+
+	// Setup mock expectations with all optional fields
+	zone := BuildZone(zoneId, name, dnsName)
+	zone.Description = utils.Ptr("Comprehensive test zone")
+	zone.Acl = utils.Ptr("192.168.0.0/16,10.0.0.0/8")
+	zone.ContactEmail = utils.Ptr("admin@example.com")
+	zone.DefaultTTL = utils.Ptr(int64(7200))
+	zone.ExpireTime = utils.Ptr(int64(1209600))
+	zone.NegativeCache = utils.Ptr(int64(600))
+	zone.RefreshTime = utils.Ptr(int64(43200))
+	zone.RetryTime = utils.Ptr(int64(3600))
+
+	zoneResp := &dns.ZoneResponse{Zone: zone}
+
+	// Mock CreateZone
+	mockCreateReq := mock_zone.NewMockApiCreateZoneRequest(tc.MockCtrl)
+	mockCreateReq.EXPECT().
+		CreateZonePayload(gomock.Any()).
+		Return(mockCreateReq).
+		Times(1)
+	mockCreateReq.EXPECT().
+		Execute().
+		Return(zoneResp, nil).
+		Times(1)
+
+	tc.MockClient.EXPECT().
+		CreateZone(gomock.Any(), projectId).
+		Return(mockCreateReq).
+		Times(1)
+
+	// Mock GetZoneExecute for wait handler
+	tc.MockClient.EXPECT().
+		GetZoneExecute(gomock.Any(), projectId, zoneId).
+		Return(&dns.ZoneResponse{Zone: zone}, nil).
+		AnyTimes()
+
+	// Prepare request with all optional fields
+	schema := tc.GetSchema()
+	model := CreateTestModel(projectId, "", name, dnsName)
+	model.Description = types.StringValue("Comprehensive test zone")
+	model.Acl = types.StringValue("192.168.0.0/16,10.0.0.0/8")
+	model.ContactEmail = types.StringValue("admin@example.com")
+	model.DefaultTTL = types.Int64Value(7200)
+	model.ExpireTime = types.Int64Value(1209600)
+	model.NegativeCache = types.Int64Value(600)
+	model.RefreshTime = types.Int64Value(43200)
+	model.RetryTime = types.Int64Value(3600)
+
+	req := CreateRequest(tc.Ctx, schema, model)
+	resp := CreateResponse(schema)
+
+	tc.Resource.Create(tc.Ctx, req, resp)
+
+	require.False(t, resp.Diagnostics.HasError(), "Create should succeed, but got errors: %v", resp.Diagnostics.Errors())
+
+	var finalState Model
+	diags := resp.State.Get(tc.Ctx, &finalState)
+	require.False(t, diags.HasError(), "Failed to get state: %v", diags.Errors())
+
+	// Verify all optional fields are populated
+	require.Equal(t, "Comprehensive test zone", finalState.Description.ValueString())
+	require.Equal(t, "192.168.0.0/16,10.0.0.0/8", finalState.Acl.ValueString())
+	require.Equal(t, "admin@example.com", finalState.ContactEmail.ValueString())
+	require.Equal(t, int64(7200), finalState.DefaultTTL.ValueInt64())
+	require.Equal(t, int64(1209600), finalState.ExpireTime.ValueInt64())
+	require.Equal(t, int64(600), finalState.NegativeCache.ValueInt64())
+	require.Equal(t, int64(43200), finalState.RefreshTime.ValueInt64())
+	require.Equal(t, int64(3600), finalState.RetryTime.ValueInt64())
 }
