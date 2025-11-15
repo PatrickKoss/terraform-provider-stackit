@@ -552,14 +552,8 @@ func mapFields(ctx context.Context, zoneResp *dns.ZoneResponse, model *Model) er
 		model.Primaries = types.ListNull(types.StringType)
 	} else {
 		respPrimaries := *z.Primaries
-		modelPrimaries, err := utils.ListValuetoStringSlice(model.Primaries)
-		if err != nil {
-			return err
-		}
-
-		reconciledPrimaries := utils.ReconcileStringSlices(modelPrimaries, respPrimaries)
-
-		primariesTF, diags := types.ListValueFrom(ctx, types.StringType, reconciledPrimaries)
+		// Use API response order directly - order matters for DNS primaries (defines priority)
+		primariesTF, diags := types.ListValueFrom(ctx, types.StringType, respPrimaries)
 		if diags.HasError() {
 			return fmt.Errorf("failed to map zone primaries: %w", core.DiagsToError(diags))
 		}

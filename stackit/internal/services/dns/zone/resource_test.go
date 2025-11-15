@@ -174,8 +174,8 @@ func TestMapFields(t *testing.T) {
 				State:             types.StringValue(string(dns.ZONESTATE_CREATING)),
 				PrimaryNameServer: types.StringValue("pns"),
 				Primaries: types.ListValueMust(types.StringType, []attr.Value{
-					types.StringValue("primary2"),
 					types.StringValue("primary1"),
+					types.StringValue("primary2"),
 				}),
 				Visibility:    types.StringValue(string(dns.ZONEVISIBILITY_PUBLIC)),
 				ContactEmail:  types.StringValue("a@b.cd"),

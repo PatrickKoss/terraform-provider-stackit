@@ -184,6 +184,7 @@ func TestRead_APICallFails(t *testing.T) {
 		Id:        types.StringValue("test-project,test-zone"),
 		ProjectId: types.StringValue(projectId),
 		ZoneId:    types.StringValue(zoneId),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := ReadRequest(tc.Ctx, schema, state)

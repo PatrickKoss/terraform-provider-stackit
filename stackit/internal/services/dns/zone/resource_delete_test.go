@@ -55,6 +55,7 @@ func TestDelete_Success(t *testing.T) {
 		ZoneId:    types.StringValue(zoneId),
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := DeleteRequest(tc.Ctx, schema, state)
@@ -108,6 +109,7 @@ func TestDelete_ContextCanceledDuringWait(t *testing.T) {
 		ZoneId:    types.StringValue(zoneId),
 		Name:      types.StringValue(name),
 		DnsName:   types.StringValue(dnsName),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := DeleteRequest(tc.Ctx, schema, state)
@@ -161,6 +163,7 @@ func TestDelete_APICallFails(t *testing.T) {
 		ZoneId:    types.StringValue(zoneId),
 		Name:      types.StringValue("test-name"),
 		DnsName:   types.StringValue("example.com."),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := DeleteRequest(tc.Ctx, schema, state)
@@ -203,6 +206,7 @@ func TestDelete_ZoneAlreadyDeleted(t *testing.T) {
 		ZoneId:    types.StringValue(zoneId),
 		Name:      types.StringValue("test-name"),
 		DnsName:   types.StringValue("example.com."),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := DeleteRequest(tc.Ctx, schema, state)
@@ -246,6 +250,7 @@ func TestDelete_ZoneGone(t *testing.T) {
 		ZoneId:    types.StringValue(zoneId),
 		Name:      types.StringValue("test-name"),
 		DnsName:   types.StringValue("example.com."),
+		Primaries: types.ListNull(types.StringType),
 	}
 
 	req := DeleteRequest(tc.Ctx, schema, state)
