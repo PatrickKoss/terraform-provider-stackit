@@ -248,7 +248,11 @@ func (r *recordSetResource) Create(ctx context.Context, req resource.CreateReque
 
 	waitResp, err := wait.CreateRecordSetWaitHandler(ctx, r.client, projectId, zoneId, *recordSetResp.Rrset.Id).WaitWithContext(ctx)
 	if err != nil {
-		tflog.Warn(ctx, fmt.Sprintf("Record set creation waiting failed: %v. The record set creation was triggered but waiting for completion was interrupted. The record set may still be creating.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(ctx, fmt.Sprintf("Record set creation waiting failed: %v. The record set creation was triggered but waiting for completion was interrupted. The record set may still be creating.", err))
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating record set", fmt.Sprintf("Waiting for record set creation: %v", err))
 		return
 	}
 
@@ -351,7 +355,11 @@ func (r *recordSetResource) Update(ctx context.Context, req resource.UpdateReque
 
 	waitResp, err := wait.PartialUpdateRecordSetWaitHandler(ctx, r.client, projectId, zoneId, recordSetId).WaitWithContext(ctx)
 	if err != nil {
-		tflog.Warn(ctx, fmt.Sprintf("Record set update waiting failed: %v. The record set update was triggered but waiting for completion was interrupted. The record set may still be updating.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(ctx, fmt.Sprintf("Record set update waiting failed: %v. The record set update was triggered but waiting for completion was interrupted. The record set may still be updating.", err))
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating record set", fmt.Sprintf("Waiting for record set update: %v", err))
 		return
 	}
 
@@ -406,7 +414,11 @@ func (r *recordSetResource) Delete(ctx context.Context, req resource.DeleteReque
 
 	_, err = wait.DeleteRecordSetWaitHandler(ctx, r.client, projectId, zoneId, recordSetId).WaitWithContext(ctx)
 	if err != nil {
-		tflog.Warn(ctx, fmt.Sprintf("Record set deletion waiting failed: %v. The record set deletion was triggered but waiting for completion was interrupted. The record set may still be deleting.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(ctx, fmt.Sprintf("Record set deletion waiting failed: %v. The record set deletion was triggered but waiting for completion was interrupted. The record set may still be deleting.", err))
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting record set", fmt.Sprintf("Waiting for record set deletion: %v", err))
 		return
 	}
 	tflog.Info(ctx, "DNS record set deleted")
