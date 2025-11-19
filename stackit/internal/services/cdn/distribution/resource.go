@@ -328,12 +328,21 @@ func (r *distributionResource) ValidateConfig(ctx context.Context, req resource.
 }
 
 func (r *distributionResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) { // nolint:gocritic // function signature required by Terraform
+	// Retrieve values from plan
 	var model Model
 	diags := req.Plan.Get(ctx, &model)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 
@@ -350,19 +359,46 @@ func (r *distributionResource) Create(ctx context.Context, req resource.CreateRe
 	}
 	distributionId := *createResp.Distribution.Id
 
-	// Save minimal state immediately to ensure idempotency
-	model.DistributionId = types.StringValue(distributionId)
-	model.ID = utils.BuildInternalTerraformId(projectId, distributionId)
-	diags = resp.State.Set(ctx, model)
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.DistributionId = types.StringValue(distributionId)
+	minimalModel.ID = utils.BuildInternalTerraformId(projectId, distributionId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating CDN distribution",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
 	// Wait for distribution to be ready
 	waitResp, err := wait.CreateDistributionPoolWaitHandler(ctx, r.client, projectId, distributionId).SetTimeout(5 * time.Minute).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN distribution", fmt.Sprintf("Distribution creation waiting: %v. The distribution was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Distribution creation waiting failed: %v. The distribution creation was triggered but waiting for completion was interrupted. The distribution may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN distribution", fmt.Sprintf("Waiting for distribution creation: %v", err))
 		return
 	}
 
@@ -529,9 +565,24 @@ func (r *distributionResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	waitResp, err := wait.UpdateDistributionWaitHandler(ctx, r.client, projectId, distributionId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating CDN distribution", fmt.Sprintf("Distribution update waiting: %v. The update was triggered but may not be complete. Run 'terraform refresh' to check the current state.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Distribution update waiting failed: %v. The distribution update was triggered but waiting for completion was interrupted. The distribution may still be updating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating CDN distribution", fmt.Sprintf("Waiting for distribution update: %v", err))
 		return
 	}
 
@@ -565,7 +616,8 @@ func (r *distributionResource) Delete(ctx context.Context, req resource.DeleteRe
 	_, err := r.client.DeleteDistribution(ctx, projectId, distributionId).Execute()
 	if err != nil {
 		// If distribution is already gone (404 or 410), treat as success for idempotency
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
 		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			tflog.Info(ctx, "CDN distribution already deleted")
 			return
@@ -574,10 +626,25 @@ func (r *distributionResource) Delete(ctx context.Context, req resource.DeleteRe
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	// Wait for deletion to complete
 	_, err = wait.DeleteDistributionWaitHandler(ctx, r.client, projectId, distributionId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN distribution", fmt.Sprintf("Distribution deletion waiting: %v. The distribution deletion was triggered but confirmation timed out. The distribution may still be deleting. Check the STACKIT Portal or retry the operation.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Distribution deletion waiting failed: %v. The distribution deletion was triggered but waiting for completion was interrupted. The distribution may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN distribution", fmt.Sprintf("Waiting for distribution deletion: %v", err))
 		return
 	}
 	tflog.Info(ctx, "CDN distribution deleted")

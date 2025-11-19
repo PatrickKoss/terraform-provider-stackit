@@ -178,6 +178,13 @@ func (r *keyRingResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	region := r.providerData.GetRegionWithOverride(model.Region)
 
@@ -201,16 +208,47 @@ func (r *keyRingResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 
 	keyRingId := *createResponse.Id
-	// Write id attributes to state before polling via the wait handler - just in case anything goes wrong during the wait handler
-	utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]any{
-		"project_id": projectId,
-		"region":     region,
-		"keyring_id": keyRingId,
-	})
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.KeyRingId = types.StringValue(keyRingId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, keyRingId)
+	minimalModel.Region = types.StringValue(region)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating keyring",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
 
 	waitResp, err := wait.CreateKeyRingWaitHandler(ctx, r.client, projectId, region, keyRingId).SetSleepBeforeWait(5 * time.Second).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating keyring", fmt.Sprintf("Key Ring creation waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Keyring creation waiting failed: %v. The keyring creation was triggered but waiting for completion was interrupted. The keyring may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating keyring", fmt.Sprintf("Waiting for keyring creation: %v", err))
 		return
 	}
 
@@ -248,7 +286,8 @@ func (r *keyRingResource) Read(ctx context.Context, req resource.ReadRequest, re
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}

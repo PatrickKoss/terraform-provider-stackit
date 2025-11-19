@@ -195,6 +195,14 @@ func (g *gitResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	diags = req.Plan.Get(ctx, &minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Set logging context with the project ID and instance ID.
 	projectId := model.ProjectId.ValueString()
 	instanceName := model.Name.ValueString()
@@ -216,21 +224,52 @@ func (g *gitResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	// Save minimal state immediately after API call succeeds to ensure idempotency
 	gitInstanceId := *gitInstanceResp.Id
+	minimalModel.InstanceId = types.StringValue(gitInstanceId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, gitInstanceId)
 
-	// Save minimal state immediately to prevent orphaned resources if wait fails
-	model.InstanceId = types.StringValue(gitInstanceId)
-	model.Id = utils.BuildInternalTerraformId(projectId, gitInstanceId)
-	diags = resp.State.Set(ctx, model)
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating git instance",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
 	// Now wait for resource to be ready
 	waitResp, err := wait.CreateGitInstanceWaitHandler(ctx, g.client, projectId, gitInstanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating git instance", fmt.Sprintf("Git instance creation waiting: %v. The instance was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Git instance creation waiting failed: %v. The instance creation was triggered but waiting for completion was interrupted. The instance may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating git instance",
+			fmt.Sprintf("Waiting for git instance creation: %v", err),
+		)
 		return
 	}
 
@@ -269,7 +308,7 @@ func (g *gitResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -328,9 +367,29 @@ func (g *gitResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteGitInstanceWaitHandler(ctx, g.client, projectId, instanceId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting git instance", fmt.Sprintf("Git instance deletion waiting: %v. The instance deletion was triggered but confirmation timed out. The instance may still be deleting. Check the STACKIT Portal or retry the operation.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Git instance deletion waiting failed: %v. The instance deletion was triggered but waiting for completion was interrupted. The instance may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error deleting git instance",
+			fmt.Sprintf("Waiting for git instance deletion: %v", err),
+		)
 		return
 	}
 

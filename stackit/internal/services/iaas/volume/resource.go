@@ -2,6 +2,7 @@ package volume
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -287,6 +288,14 @@ func (r *volumeResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	diags = req.Plan.Get(ctx, &minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 
@@ -307,21 +316,56 @@ func (r *volumeResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	// Create new volume
-
 	volume, err := r.client.CreateVolume(ctx, projectId).CreateVolumePayload(*payload).Execute()
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating volume", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
 
+	// Save minimal state immediately after API call succeeds to ensure idempotency
 	volumeId := *volume.Id
-	volume, err = wait.CreateVolumeWaitHandler(ctx, r.client, projectId, volumeId).WaitWithContext(ctx)
-	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating volume", fmt.Sprintf("volume creation waiting: %v", err))
+	minimalModel.VolumeId = types.StringValue(volumeId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, volumeId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating volume",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
 	ctx = tflog.SetField(ctx, "volume_id", volumeId)
+
+	volume, err = wait.CreateVolumeWaitHandler(ctx, r.client, projectId, volumeId).WaitWithContext(ctx)
+	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Volume creation waiting failed: %v. The volume creation was triggered but waiting for completion was interrupted. The volume may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating volume", fmt.Sprintf("Waiting for volume creation: %v", err))
+		return
+	}
 
 	// Map response body to schema
 	err = mapFields(ctx, volume, &model)
@@ -353,8 +397,10 @@ func (r *volumeResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	volumeResp, err := r.client.GetVolume(ctx, projectId, volumeId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -461,12 +507,36 @@ func (r *volumeResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	// Delete existing volume
 	err := r.client.DeleteVolume(ctx, projectId, volumeId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Volume already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting volume", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteVolumeWaitHandler(ctx, r.client, projectId, volumeId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting volume", fmt.Sprintf("volume deletion waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Volume deletion waiting failed: %v. The volume deletion was triggered but waiting for completion was interrupted. The volume may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting volume", fmt.Sprintf("Waiting for volume deletion: %v", err))
 		return
 	}
 

@@ -2,6 +2,7 @@ package networkarea
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -239,6 +240,13 @@ func (r *networkAreaResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	organizationId := model.OrganizationId.ValueString()
 	ctx = tflog.SetField(ctx, "organization_id", organizationId)
 
@@ -256,13 +264,50 @@ func (r *networkAreaResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	networkArea, err := wait.CreateNetworkAreaWaitHandler(ctx, r.client, organizationId, *area.AreaId).WaitWithContext(context.Background())
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	networkAreaId := *area.AreaId
+	minimalModel.NetworkAreaId = types.StringValue(networkAreaId)
+	minimalModel.Id = utils.BuildInternalTerraformId(organizationId, networkAreaId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating network area",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
+	ctx = tflog.SetField(ctx, "network_area_id", networkAreaId)
+
+	networkArea, err := wait.CreateNetworkAreaWaitHandler(ctx, r.client, organizationId, networkAreaId).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Network area creation waiting failed: %v. The network area creation was triggered but waiting for completion was interrupted. The network area may still be creating.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating network area", fmt.Sprintf("Network area creation waiting: %v", err))
 		return
 	}
-	networkAreaId := *networkArea.AreaId
-	ctx = tflog.SetField(ctx, "network_area_id", networkAreaId)
 
 	networkAreaRanges := networkArea.Ipv4.NetworkRanges
 
@@ -296,8 +341,10 @@ func (r *networkAreaResource) Read(ctx context.Context, req resource.ReadRequest
 
 	networkAreaResp, err := r.client.GetNetworkArea(ctx, organizationId, networkAreaId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -365,8 +412,24 @@ func (r *networkAreaResource) Update(ctx context.Context, req resource.UpdateReq
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating network area", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	waitResp, err := wait.UpdateNetworkAreaWaitHandler(ctx, r.client, organizationId, networkAreaId).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Network area update waiting failed: %v. The network area update was triggered but waiting for completion was interrupted. The network area may still be updating.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating network area", fmt.Sprintf("Network area update waiting: %v", err))
 		return
 	}
@@ -380,8 +443,10 @@ func (r *networkAreaResource) Update(ctx context.Context, req resource.UpdateReq
 
 	networkAreaResp, err := r.client.GetNetworkArea(ctx, organizationId, networkAreaId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -419,8 +484,37 @@ func (r *networkAreaResource) Delete(ctx context.Context, req resource.DeleteReq
 	ctx = tflog.SetField(ctx, "organization_id", organizationId)
 	ctx = tflog.SetField(ctx, "network_area_id", networkAreaId)
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		// In async mode, we still need to call the delete API
+		err := r.client.DeleteNetworkArea(ctx, organizationId, networkAreaId).Execute()
+		if err != nil {
+			// If resource is already gone (404 or 410), treat as success for idempotency
+			var oapiErr *oapierror.GenericOpenAPIError
+			ok := errors.As(err, &oapiErr)
+			if ok &&
+				(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+				tflog.Info(ctx, "Network area already deleted")
+				return
+			}
+			core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting network area", fmt.Sprintf("Calling API: %v", err))
+			return
+		}
+		return
+	}
+
 	_, err := wait.ReadyForNetworkAreaDeletionWaitHandler(ctx, r.client, r.resourceManagerClient, organizationId, networkAreaId).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Network area ready for deletion waiting failed: %v. Waiting for readiness was interrupted.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting network area", fmt.Sprintf("Network area ready for deletion waiting: %v", err))
 		return
 	}
@@ -428,11 +522,30 @@ func (r *networkAreaResource) Delete(ctx context.Context, req resource.DeleteReq
 	// Delete existing network
 	err = r.client.DeleteNetworkArea(ctx, organizationId, networkAreaId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Network area already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting network area", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
 	_, err = wait.DeleteNetworkAreaWaitHandler(ctx, r.client, organizationId, networkAreaId).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Network area deletion waiting failed: %v. The network area deletion was triggered but waiting for completion was interrupted. The network area may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting network area", fmt.Sprintf("Network area deletion waiting: %v", err))
 		return
 	}

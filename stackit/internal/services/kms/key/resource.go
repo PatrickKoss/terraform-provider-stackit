@@ -243,6 +243,13 @@ func (r *keyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	region := r.providerData.GetRegionWithOverride(model.Region)
 	keyRingId := model.KeyRingId.ValueString()
@@ -269,17 +276,47 @@ func (r *keyResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 
 	keyId := *createResponse.Id
-	// Write id attributes to state before polling via the wait handler - just in case anything goes wrong during the wait handler
-	utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]any{
-		"project_id": projectId,
-		"region":     region,
-		"keyring_id": keyRingId,
-		"key_id":     keyId,
-	})
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.KeyId = types.StringValue(keyId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, keyRingId, keyId)
+	minimalModel.Region = types.StringValue(region)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating key",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
 
 	waitHandlerResp, err := wait.CreateOrUpdateKeyWaitHandler(ctx, r.client, projectId, region, keyRingId, keyId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error waiting for key creation", fmt.Sprintf("Calling API: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Key creation waiting failed: %v. The key creation was triggered but waiting for completion was interrupted. The key may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating key", fmt.Sprintf("Waiting for key creation: %v", err))
 		return
 	}
 
@@ -319,7 +356,8 @@ func (r *keyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -358,9 +396,23 @@ func (r *keyResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 	region := r.providerData.GetRegionWithOverride(model.Region)
 	keyId := model.KeyId.ValueString()
 
+	ctx = tflog.SetField(ctx, "project_id", projectId)
+	ctx = tflog.SetField(ctx, "region", region)
+	ctx = tflog.SetField(ctx, "keyring_id", keyRingId)
+	ctx = tflog.SetField(ctx, "key_id", keyId)
+
 	err := r.client.DeleteKey(ctx, projectId, region, keyRingId, keyId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Key already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting key", fmt.Sprintf("Calling API: %v", err))
+		return
 	}
 
 	// The keys can't be deleted instantly by Terraform, they can only be scheduled for deletion via the API.

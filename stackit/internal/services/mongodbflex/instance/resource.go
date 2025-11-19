@@ -444,6 +444,16 @@ func (r *instanceResource) Create(ctx context.Context, req resource.CreateReques
 
 	waitResp, err := wait.CreateInstanceWaitHandler(ctx, r.client, projectId, instanceId, region).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Instance creation waiting failed: %v. The instance creation was triggered but waiting for completion was interrupted. The instance may still be creating.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating instance", fmt.Sprintf("Instance creation waiting: %v", err))
 		return
 	}
@@ -636,6 +646,16 @@ func (r *instanceResource) Update(ctx context.Context, req resource.UpdateReques
 
 	waitResp, err := wait.UpdateInstanceWaitHandler(ctx, r.client, projectId, instanceId, region).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Instance update waiting failed: %v. The instance update was triggered but waiting for completion was interrupted. The instance may still be updating.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating instance", fmt.Sprintf("Instance update waiting: %v", err))
 		return
 	}
@@ -708,6 +728,16 @@ func (r *instanceResource) Delete(ctx context.Context, req resource.DeleteReques
 
 	_, err = wait.DeleteInstanceWaitHandler(ctx, r.client, projectId, instanceId, region).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Instance deletion waiting failed: %v. The instance deletion was triggered but waiting for completion was interrupted. The instance may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting instance", fmt.Sprintf("Instance deletion waiting: %v", err))
 		return
 	}

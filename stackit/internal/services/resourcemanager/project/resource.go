@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/conversion"
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/core"
+	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/utils"
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/validate"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -196,6 +198,13 @@ func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel ResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	containerId := model.ContainerId.ValueString()
 	ctx = tflog.SetField(ctx, "project_container_id", containerId)
 
@@ -213,11 +222,47 @@ func (r *projectResource) Create(ctx context.Context, req resource.CreateRequest
 	}
 	respContainerId := *createResp.ContainerId
 
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.ContainerId = types.StringValue(respContainerId)
+	minimalModel.Id = types.StringValue(respContainerId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating project",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	// If the request has not been processed yet and the containerId doesn't exist,
 	// the waiter will fail with authentication error, so wait some time before checking the creation
 	waitResp, err := wait.CreateProjectWaitHandler(ctx, r.client, respContainerId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating project", fmt.Sprintf("Instance creation waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Project creation waiting failed: %v. The project creation was triggered but waiting for completion was interrupted. The project may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating project", fmt.Sprintf("Project creation waiting: %v", err))
 		return
 	}
 
@@ -249,8 +294,10 @@ func (r *projectResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 	projectResp, err := r.client.GetProject(ctx, containerId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusForbidden {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone || oapiErr.StatusCode == http.StatusForbidden) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -335,13 +382,36 @@ func (r *projectResource) Delete(ctx context.Context, req resource.DeleteRequest
 	// Delete existing project
 	err := r.client.DeleteProject(ctx, containerId).Execute()
 	if err != nil {
+		// If resource is already gone (404, 410, or 403), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone || oapiErr.StatusCode == http.StatusForbidden) {
+			tflog.Info(ctx, "Project already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting project", fmt.Sprintf("Calling API: %v", err))
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
 	_, err = wait.DeleteProjectWaitHandler(ctx, r.client, containerId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting project", fmt.Sprintf("Instance deletion waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Project deletion waiting failed: %v. The project deletion was triggered but waiting for completion was interrupted. The project may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting project", fmt.Sprintf("Project deletion waiting: %v", err))
 		return
 	}
 

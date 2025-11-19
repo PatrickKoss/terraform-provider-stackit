@@ -179,6 +179,13 @@ func (r *serviceAccountTokenResource) Create(ctx context.Context, req resource.C
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Set logging context with the project ID and service account email.
 	projectId := model.ProjectId.ValueString()
 	serviceAccountEmail := model.ServiceAccountEmail.ValueString()
@@ -197,6 +204,25 @@ func (r *serviceAccountTokenResource) Create(ctx context.Context, req resource.C
 
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Failed to create service account access token", fmt.Sprintf("API call error: %v", err))
+		return
+	}
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	err = mapCreateResponse(serviceAccountAccessTokenResp, &minimalModel)
+	if err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating service account access token", fmt.Sprintf("Processing API payload: %v", err))
+		return
+	}
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating service account access token", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
 		return
 	}
 
@@ -237,7 +263,7 @@ func (r *serviceAccountTokenResource) Read(ctx context.Context, req resource.Rea
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
 		// due to security purposes, attempting to list access tokens for a non-existent Service Account will return 403.
-		if ok && oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusForbidden {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone || oapiErr.StatusCode == http.StatusForbidden) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -306,6 +332,13 @@ func (r *serviceAccountTokenResource) Delete(ctx context.Context, req resource.D
 	// Call API to delete the existing service account.
 	err := r.client.DeleteAccessToken(ctx, projectId, serviceAccountEmail, accessTokenId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Service account token already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting service account token", fmt.Sprintf("Calling API: %v", err))
 		return
 	}

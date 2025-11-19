@@ -245,12 +245,21 @@ func (r *kubeconfigResource) Create(ctx context.Context, req resource.CreateRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	clusterName := model.ClusterName.ValueString()
 	kubeconfigUUID := uuid.New().String()
 	region := model.Region.ValueString()
 
 	model.KubeconfigId = types.StringValue(kubeconfigUUID)
+	minimalModel.KubeconfigId = types.StringValue(kubeconfigUUID)
 
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	ctx = tflog.SetField(ctx, "cluster_name", clusterName)
@@ -263,9 +272,20 @@ func (r *kubeconfigResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
+	// Save minimal state immediately - copy IDs from model to minimalModel
+	minimalModel.Id = model.Id
+	minimalModel.KubeconfigId = model.KubeconfigId
+	minimalModel.Region = model.Region
+
 	// Set all unknown/null fields to null before saving state
-	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating kubeconfig", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
 		return
 	}
 

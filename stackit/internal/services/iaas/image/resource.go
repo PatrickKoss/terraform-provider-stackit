@@ -3,6 +3,7 @@ package image
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -377,6 +378,14 @@ func (r *imageResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	diags = req.Plan.Get(ctx, &minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 
@@ -393,26 +402,27 @@ func (r *imageResource) Create(ctx context.Context, req resource.CreateRequest, 
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating image", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
-	ctx = tflog.SetField(ctx, "image_id", *imageCreateResp.Id)
+	imageId := *imageCreateResp.Id
+	ctx = tflog.SetField(ctx, "image_id", imageId)
 
-	// Get the image object, as the create response does not contain all fields
-	image, err := r.client.GetImage(ctx, projectId, *imageCreateResp.Id).Execute()
-	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating image", fmt.Sprintf("Calling API: %v", err))
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.ImageId = types.StringValue(imageId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, imageId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating image",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
 		return
 	}
 
-	// Map response body to schema
-	err = mapFields(ctx, image, &model)
-	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating image", fmt.Sprintf("Processing API payload: %v", err))
-		return
-	}
-
-	// Set state to partially populated data
-	diags = resp.State.Set(ctx, model)
+	diags = resp.State.Set(ctx, minimalModel)
 	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	if diags.HasError() {
 		return
 	}
 
@@ -423,11 +433,26 @@ func (r *imageResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	// Wait for image to become available
-	waiter := wait.UploadImageWaitHandler(ctx, r.client, projectId, *imageCreateResp.Id)
+	waiter := wait.UploadImageWaitHandler(ctx, r.client, projectId, imageId)
 	waiter = waiter.SetTimeout(7 * 24 * time.Hour) // Set timeout to one week, to make the timeout useless
 	waitResp, err := waiter.WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Image upload waiting failed: %v. The image creation was triggered but waiting for completion was interrupted. The image may still be uploading.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating image", fmt.Sprintf("Waiting for image to become available: %v", err))
 		return
 	}
@@ -463,8 +488,9 @@ func (r *imageResource) Read(ctx context.Context, req resource.ReadRequest, resp
 
 	imageResp, err := r.client.GetImage(ctx, projectId, imageId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -553,12 +579,35 @@ func (r *imageResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	// Delete existing image
 	err := r.client.DeleteImage(ctx, projectId, imageId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Image already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting image", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteImageWaitHandler(ctx, r.client, projectId, imageId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting image", fmt.Sprintf("image deletion waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Image deletion waiting failed: %v. The image deletion was triggered but waiting for completion was interrupted. The image may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting image", fmt.Sprintf("Image deletion waiting: %v", err))
 		return
 	}
 

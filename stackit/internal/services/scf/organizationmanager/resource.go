@@ -214,6 +214,13 @@ func (s *scfOrganizationManagerResource) Create(ctx context.Context, request res
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	response.Diagnostics.Append(request.Plan.Get(ctx, &minimalModel)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	// Set logging context with the project ID and username.
 	projectId := model.ProjectId.ValueString()
 	orgId := model.OrgId.ValueString()
@@ -232,6 +239,28 @@ func (s *scfOrganizationManagerResource) Create(ctx context.Context, request res
 	scfOrgManagerCreateResponse, err := s.client.CreateOrgManagerExecute(ctx, projectId, region, orgId)
 	if err != nil {
 		core.LogAndAddError(ctx, &response.Diagnostics, "Error creating scf organization manager", fmt.Sprintf("Calling API to create org manager: %v", err))
+		return
+	}
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	userId := *scfOrgManagerCreateResponse.Guid
+	minimalModel.UserId = types.StringValue(userId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, orgId, userId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(ctx, &response.Diagnostics, "Error creating scf organization manager", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = response.State.Set(ctx, minimalModel)
+	response.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
@@ -272,7 +301,7 @@ func (s *scfOrganizationManagerResource) Read(ctx context.Context, request resou
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			core.LogAndAddWarning(ctx, &response.Diagnostics, "SCF Organization manager not found", "SCF Organization manager not found, remove from state")
 			response.State.RemoveResource(ctx)
 			return
@@ -317,9 +346,10 @@ func (s *scfOrganizationManagerResource) Delete(ctx context.Context, request res
 	// Call API to delete the existing scf organization manager.
 	_, err := s.client.DeleteOrgManagerExecute(ctx, projectId, region, orgId)
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusGone {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			tflog.Info(ctx, "Scf organization manager was already deleted")
 			return
 		}

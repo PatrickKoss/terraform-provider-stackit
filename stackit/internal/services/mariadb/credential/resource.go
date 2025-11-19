@@ -210,8 +210,17 @@ func (r *credentialResource) Create(ctx context.Context, req resource.CreateRequ
 	// Wait for credential to be ready
 	waitResp, err := wait.CreateCredentialsWaitHandler(ctx, r.client, projectId, instanceId, credentialId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credential",
-			fmt.Sprintf("Credential creation waiting: %v. The credential was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Credential creation waiting failed: %v. The credential creation was triggered but waiting for completion was interrupted. The credential may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating credential", fmt.Sprintf("Waiting for credential creation: %v", err))
 		return
 	}
 
@@ -247,7 +256,7 @@ func (r *credentialResource) Read(ctx context.Context, req resource.ReadRequest,
 	recordSetResp, err := r.client.GetCredentials(ctx, projectId, instanceId, credentialId).Execute()
 	if err != nil {
 		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -314,8 +323,17 @@ func (r *credentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 	// Wait for deletion to complete
 	_, err = wait.DeleteCredentialsWaitHandler(ctx, r.client, projectId, instanceId, credentialId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting credential",
-			fmt.Sprintf("Credential deletion waiting: %v. The credential deletion was triggered but confirmation timed out. The credential may still be deleting. Check the STACKIT Portal or retry the operation.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Credential deletion waiting failed: %v. The credential deletion was triggered but waiting for completion was interrupted. The credential may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting credential", fmt.Sprintf("Waiting for credential deletion: %v", err))
 		return
 	}
 	tflog.Info(ctx, "MariaDB credential deleted")

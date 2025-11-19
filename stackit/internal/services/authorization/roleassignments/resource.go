@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/utils"
@@ -20,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
 	"github.com/stackitcloud/stackit-sdk-go/services/authorization"
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/core"
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/features"
@@ -152,6 +154,13 @@ func (r *roleAssignmentResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	ctx = r.annotateLogger(ctx, &model)
 
 	if err := r.checkDuplicate(ctx, model); err != nil {
@@ -168,6 +177,32 @@ func (r *roleAssignmentResource) Create(ctx context.Context, req resource.Create
 	createResp, err := r.authorizationClient.AddMembers(ctx, model.ResourceId.ValueString()).AddMembersPayload(*payload).Execute()
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, fmt.Sprintf("Error creating %s role assignment", r.apiName), fmt.Sprintf("Calling API: %v", err))
+		return
+	}
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	resourceId := model.ResourceId.ValueString()
+	role := model.Role.ValueString()
+	subject := model.Subject.ValueString()
+	minimalModel.Id = utils.BuildInternalTerraformId(resourceId, role, subject)
+	minimalModel.ResourceId = types.StringValue(resourceId)
+	minimalModel.Role = types.StringValue(role)
+	minimalModel.Subject = types.StringValue(subject)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			fmt.Sprintf("Error creating %s role assignment", r.apiName),
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
 		return
 	}
 
@@ -198,6 +233,13 @@ func (r *roleAssignmentResource) Read(ctx context.Context, req resource.ReadRequ
 
 	listResp, err := r.authorizationClient.ListMembers(ctx, r.apiName, model.ResourceId.ValueString()).Subject(model.Subject.ValueString()).Execute()
 	if err != nil {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error reading authorizations", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
@@ -205,6 +247,10 @@ func (r *roleAssignmentResource) Read(ctx context.Context, req resource.ReadRequ
 	// Map response body to schema
 	err = mapListMembersResponse(listResp, &model)
 	if err != nil {
+		if errors.Is(err, errRoleAssignmentNotFound) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error reading authorization", fmt.Sprintf("Processing API payload: %v", err))
 		return
 	}
@@ -244,7 +290,16 @@ func (r *roleAssignmentResource) Delete(ctx context.Context, req resource.Delete
 	// Delete existing project role assignment
 	_, err := r.authorizationClient.RemoveMembers(ctx, model.ResourceId.ValueString()).RemoveMembersPayload(payload).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, fmt.Sprintf("%s role assignment already deleted", r.apiName))
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, fmt.Sprintf("Error deleting %s role assignment", r.apiName), fmt.Sprintf("Calling API: %v", err))
+		return
 	}
 
 	tflog.Info(ctx, fmt.Sprintf("%s role assignment deleted", r.apiName))

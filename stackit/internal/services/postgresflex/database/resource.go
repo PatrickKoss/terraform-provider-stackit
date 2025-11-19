@@ -291,7 +291,8 @@ func (r *databaseResource) Read(ctx context.Context, req resource.ReadRequest, r
 
 	databaseResp, err := getDatabase(ctx, r.client, projectId, region, instanceId, databaseId)
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
 		if (ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone)) || errors.Is(err, databaseNotFoundErr) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -341,11 +342,12 @@ func (r *databaseResource) Delete(ctx context.Context, req resource.DeleteReques
 	ctx = tflog.SetField(ctx, "database_id", databaseId)
 	ctx = tflog.SetField(ctx, "region", region)
 
-	// Delete existing record set
+	// Delete existing database
 	err := r.client.DeleteDatabase(ctx, projectId, region, instanceId, databaseId).Execute()
 	if err != nil {
 		// If database is already gone (404 or 410), treat as success for idempotency
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
 		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			tflog.Info(ctx, "Database already deleted")
 			return

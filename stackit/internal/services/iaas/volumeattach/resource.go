@@ -2,6 +2,7 @@ package volumeattach
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -132,6 +133,14 @@ func (r *volumeAttachResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	diags = req.Plan.Get(ctx, &minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	serverId := model.ServerId.ValueString()
@@ -140,7 +149,6 @@ func (r *volumeAttachResource) Create(ctx context.Context, req resource.CreateRe
 	ctx = tflog.SetField(ctx, "volume_id", volumeId)
 
 	// Create new Volume attachment
-
 	payload := iaas.AddVolumeToServerPayload{
 		DeleteOnTermination: sdkUtils.Ptr(false),
 	}
@@ -150,9 +158,44 @@ func (r *volumeAttachResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, serverId, volumeId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error attaching volume to server",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.AddVolumeToServerWaitHandler(ctx, r.client, projectId, serverId, volumeId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error attaching volume to server", fmt.Sprintf("volume attachment waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Volume attachment waiting failed: %v. The volume attachment was triggered but waiting for completion was interrupted. The volume may still be attaching.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error attaching volume to server", fmt.Sprintf("Waiting for volume attachment: %v", err))
 		return
 	}
 
@@ -184,8 +227,10 @@ func (r *volumeAttachResource) Read(ctx context.Context, req resource.ReadReques
 
 	_, err := r.client.GetAttachedVolume(ctx, projectId, serverId, volumeId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -227,13 +272,36 @@ func (r *volumeAttachResource) Delete(ctx context.Context, req resource.DeleteRe
 	// Remove volume from server
 	err := r.client.RemoveVolumeFromServer(ctx, projectId, serverId, volumeId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Volume attachment already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error removing volume from server", fmt.Sprintf("Calling API: %v", err))
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
 	_, err = wait.RemoveVolumeFromServerWaitHandler(ctx, r.client, projectId, serverId, volumeId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error removing volume from server", fmt.Sprintf("volume removal waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Volume detachment waiting failed: %v. The volume detachment was triggered but waiting for completion was interrupted. The volume may still be detaching.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error removing volume from server", fmt.Sprintf("Waiting for volume detachment: %v", err))
 		return
 	}
 

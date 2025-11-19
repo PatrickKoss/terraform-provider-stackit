@@ -2,7 +2,9 @@ package account
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/stackitcloud/stackit-sdk-go/core/oapierror"
 	"github.com/stackitcloud/stackit-sdk-go/services/serviceaccount"
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/conversion"
 	"github.com/stackitcloud/terraform-provider-stackit/stackit/internal/core"
@@ -128,6 +131,13 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Set logging context with the project ID and service account name.
 	projectId := model.ProjectId.ValueString()
 	serviceAccountName := model.Name.ValueString()
@@ -148,16 +158,36 @@ func (r *serviceAccountResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	// Set the service account name and map the response to the resource schema.
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.Name = types.StringValue(serviceAccountName)
+	err = mapFields(serviceAccountResp, &minimalModel)
+	if err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating service account", fmt.Sprintf("Processing API response: %v", err))
+		return
+	}
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating service account", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	// This sleep is currently needed due to the IAM Cache.
+	time.Sleep(5 * time.Second)
+
+	// Map full response to the model
 	model.Name = types.StringValue(serviceAccountName)
 	err = mapFields(serviceAccountResp, &model)
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating service account", fmt.Sprintf("Processing API response: %v", err))
 		return
 	}
-
-	// This sleep is currently needed due to the IAM Cache.
-	time.Sleep(5 * time.Second)
 
 	// Set the state with fully populated data.
 	diags = resp.State.Set(ctx, model)
@@ -242,6 +272,13 @@ func (r *serviceAccountResource) Delete(ctx context.Context, req resource.Delete
 	// Call API to delete the existing service account.
 	err := r.client.DeleteServiceAccount(ctx, projectId, serviceAccountEmail).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Service account already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting service account", fmt.Sprintf("Calling API: %v", err))
 		return
 	}

@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -721,6 +722,13 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	region := model.Region.ValueString()
 	clusterName := model.Name.ValueString()
@@ -747,7 +755,7 @@ func (r *clusterResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	r.createOrUpdateCluster(ctx, &resp.Diagnostics, &model, availableKubernetesVersions, availableMachines, nil, nil)
+	r.createOrUpdateCluster(ctx, &resp.Diagnostics, &model, &minimalModel, availableKubernetesVersions, availableMachines, nil, nil, &resp.State)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -840,7 +848,7 @@ func getCurrentVersions(ctx context.Context, c skeClient, m *Model) (kubernetesV
 	return kubernetesVersion, nodePoolMachineImages
 }
 
-func (r *clusterResource) createOrUpdateCluster(ctx context.Context, diags *diag.Diagnostics, model *Model, availableKubernetesVersions []ske.KubernetesVersion, availableMachineVersions []ske.MachineImage, currentKubernetesVersion *string, currentMachineImages map[string]*ske.Image) {
+func (r *clusterResource) createOrUpdateCluster(ctx context.Context, diags *diag.Diagnostics, model *Model, minimalModel *Model, availableKubernetesVersions []ske.KubernetesVersion, availableMachineVersions []ske.MachineImage, currentKubernetesVersion *string, currentMachineImages map[string]*ske.Image, state *tfsdk.State) {
 	// cluster vars
 	projectId := model.ProjectId.ValueString()
 	name := model.Name.ValueString()
@@ -896,6 +904,25 @@ func (r *clusterResource) createOrUpdateCluster(ctx context.Context, diags *diag
 		return
 	}
 
+	// Save minimal state immediately after API call succeeds to ensure idempotency (only for Create)
+	if minimalModel != nil && state != nil {
+		minimalModel.Name = types.StringValue(name)
+		minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, name)
+		minimalModel.Region = types.StringValue(region)
+
+		// Set all unknown/null fields to null before saving state
+		if err := utils.SetModelFieldsToNull(ctx, minimalModel); err != nil {
+			core.LogAndAddError(ctx, diags, "Error creating/updating cluster", fmt.Sprintf("Setting model fields to null: %v", err))
+			return
+		}
+
+		stateDiags := state.Set(ctx, *minimalModel)
+		diags.Append(stateDiags...)
+		if stateDiags.HasError() {
+			return
+		}
+	}
+
 	if !utils.ShouldWait() {
 		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
@@ -903,7 +930,11 @@ func (r *clusterResource) createOrUpdateCluster(ctx context.Context, diags *diag
 
 	waitResp, err := skeWait.CreateOrUpdateClusterWaitHandler(ctx, r.skeClient, projectId, region, name).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, diags, "Error creating/updating cluster", fmt.Sprintf("Cluster creation waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(ctx, fmt.Sprintf("Cluster creation/update waiting failed: %v. The cluster creation/update was triggered but waiting for completion was interrupted. The cluster may still be creating/updating.", err))
+			return
+		}
+		core.LogAndAddError(ctx, diags, "Error creating/updating cluster", fmt.Sprintf("Waiting for cluster creation/update: %v", err))
 		return
 	}
 	if waitResp.Status.Error != nil && waitResp.Status.Error.Message != nil && *waitResp.Status.Error.Code == ske.RUNTIMEERRORCODE_OBSERVABILITY_INSTANCE_NOT_FOUND {
@@ -2177,7 +2208,7 @@ func (r *clusterResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	currentKubernetesVersion, currentMachineImages := getCurrentVersions(ctx, r.skeClient, &model)
 
-	r.createOrUpdateCluster(ctx, &resp.Diagnostics, &model, availableKubernetesVersions, availableMachines, currentKubernetesVersion, currentMachineImages)
+	r.createOrUpdateCluster(ctx, &resp.Diagnostics, &model, nil, availableKubernetesVersions, availableMachines, currentKubernetesVersion, currentMachineImages, nil)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -2222,7 +2253,11 @@ func (r *clusterResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	_, err = skeWait.DeleteClusterWaitHandler(ctx, r.skeClient, projectId, region, name).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting cluster", fmt.Sprintf("Cluster deletion waiting: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(ctx, fmt.Sprintf("Cluster deletion waiting failed: %v. The cluster deletion was triggered but waiting for completion was interrupted. The cluster may still be deleting.", err))
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting cluster", fmt.Sprintf("Waiting for cluster deletion: %v", err))
 		return
 	}
 	tflog.Info(ctx, "SKE cluster deleted")

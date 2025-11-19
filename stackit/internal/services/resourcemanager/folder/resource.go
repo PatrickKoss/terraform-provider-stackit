@@ -2,6 +2,7 @@ package folder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -249,8 +250,10 @@ func (r *folderResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	folderResp, err := r.client.GetFolderDetails(ctx, containerId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusForbidden {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone || oapiErr.StatusCode == http.StatusForbidden) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -335,6 +338,14 @@ func (r *folderResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	// Delete existing folder
 	err := r.client.DeleteFolder(ctx, containerId).Execute()
 	if err != nil {
+		// If resource is already gone (404, 410, or 403), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone || oapiErr.StatusCode == http.StatusForbidden) {
+			tflog.Info(ctx, "Folder already deleted")
+			return
+		}
 		core.LogAndAddError(
 			ctx,
 			&resp.Diagnostics,

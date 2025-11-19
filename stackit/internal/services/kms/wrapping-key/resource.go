@@ -248,6 +248,13 @@ func (r *wrappingKeyResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	region := r.providerData.GetRegionWithOverride(model.Region)
 	keyRingId := model.KeyRingId.ValueString()
@@ -275,17 +282,46 @@ func (r *wrappingKeyResource) Create(ctx context.Context, req resource.CreateReq
 
 	wrappingKeyId := *createWrappingKeyResp.Id
 
-	// Write id attributes to state before polling via the wait handler - just in case anything goes wrong during the wait handler
-	utils.SetAndLogStateFields(ctx, &resp.Diagnostics, &resp.State, map[string]interface{}{
-		"project_id":      projectId,
-		"region":          region,
-		"keyring_id":      keyRingId,
-		"wrapping_key_id": wrappingKeyId,
-	})
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.WrappingKeyId = types.StringValue(wrappingKeyId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, keyRingId, wrappingKeyId)
+	minimalModel.Region = types.StringValue(region)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating wrapping key",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
 
 	wrappingKey, err := wait.CreateWrappingKeyWaitHandler(ctx, r.client, projectId, region, keyRingId, wrappingKeyId).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error waiting for wrapping key creation", fmt.Sprintf("Calling API: %v", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Wrapping key creation waiting failed: %v. The wrapping key creation was triggered but waiting for completion was interrupted. The wrapping key may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating wrapping key", fmt.Sprintf("Waiting for wrapping key creation: %v", err))
 		return
 	}
 
@@ -325,7 +361,8 @@ func (r *wrappingKeyResource) Read(ctx context.Context, request resource.ReadReq
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			response.State.RemoveResource(ctx)
 			return
 		}
@@ -364,9 +401,23 @@ func (r *wrappingKeyResource) Delete(ctx context.Context, request resource.Delet
 	region := r.providerData.GetRegionWithOverride(model.Region)
 	wrappingKeyId := model.WrappingKeyId.ValueString()
 
+	ctx = tflog.SetField(ctx, "project_id", projectId)
+	ctx = tflog.SetField(ctx, "region", region)
+	ctx = tflog.SetField(ctx, "keyring_id", keyRingId)
+	ctx = tflog.SetField(ctx, "wrapping_key_id", wrappingKeyId)
+
 	err := r.client.DeleteWrappingKey(ctx, projectId, region, keyRingId, wrappingKeyId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Wrapping key already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &response.Diagnostics, "Error deleting wrapping key", fmt.Sprintf("Calling API: %v", err))
+		return
 	}
 
 	tflog.Info(ctx, "wrapping key deleted")

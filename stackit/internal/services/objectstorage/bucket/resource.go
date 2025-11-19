@@ -222,6 +222,16 @@ func (r *bucketResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	waitResp, err := wait.CreateBucketWaitHandler(ctx, r.client, projectId, region, bucketName).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Bucket creation waiting failed: %v. The bucket creation was triggered but waiting for completion was interrupted. The bucket may still be creating.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating bucket", fmt.Sprintf("Bucket creation waiting: %v", err))
 		return
 	}
@@ -264,8 +274,10 @@ func (r *bucketResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	bucketResp, err := r.client.GetBucket(ctx, projectId, region, bucketName).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -336,6 +348,16 @@ func (r *bucketResource) Delete(ctx context.Context, req resource.DeleteRequest,
 
 	_, err = wait.DeleteBucketWaitHandler(ctx, r.client, projectId, region, bucketName).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Bucket deletion waiting failed: %v. The bucket deletion was triggered but waiting for completion was interrupted. The bucket may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting bucket", fmt.Sprintf("Bucket deletion waiting: %v", err))
 		return
 	}

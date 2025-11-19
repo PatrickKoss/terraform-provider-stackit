@@ -180,12 +180,21 @@ func (r *customDomainResource) Schema(_ context.Context, _ resource.SchemaReques
 }
 
 func (r *customDomainResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) { // nolint:gocritic // function signature required by Terraform
+	// Retrieve values from plan
 	var model CustomDomainModel
 	diags := req.Plan.Get(ctx, &model)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Get a fresh copy from plan for minimal state
+	var minimalModel CustomDomainModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 	distributionId := model.DistributionId.ValueString()
@@ -209,16 +218,43 @@ func (r *customDomainResource) Create(ctx context.Context, req resource.CreateRe
 	}
 
 	// Save minimal state immediately after API call succeeds to ensure idempotency
-	model.ID = utils.BuildInternalTerraformId(projectId, distributionId, name)
-	diags = resp.State.Set(ctx, model)
+	minimalModel.ID = utils.BuildInternalTerraformId(projectId, distributionId, name)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating CDN custom domain",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.CreateCDNCustomDomainWaitHandler(ctx, r.client, projectId, distributionId, name).SetTimeout(5 * time.Minute).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN custom domain", fmt.Sprintf("Custom domain creation waiting: %v. The custom domain was created but is not yet ready. You can check its status in the STACKIT Portal or run 'terraform refresh' to update the state once it's ready.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Custom domain creation waiting failed: %v. The custom domain creation was triggered but waiting for completion was interrupted. The custom domain may still be creating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating CDN custom domain", fmt.Sprintf("Waiting for custom domain creation: %v", err))
 		return
 	}
 
@@ -315,9 +351,24 @@ func (r *customDomainResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.CreateCDNCustomDomainWaitHandler(ctx, r.client, projectId, distributionId, name).SetTimeout(5 * time.Minute).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating CDN custom domain certificate", fmt.Sprintf("Custom domain update waiting: %v. The update was triggered but may not be complete. Run 'terraform refresh' to check the current state.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Custom domain update waiting failed: %v. The custom domain update was triggered but waiting for completion was interrupted. The custom domain may still be updating.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating CDN custom domain certificate", fmt.Sprintf("Waiting for custom domain update: %v", err))
 		return
 	}
 
@@ -367,9 +418,25 @@ func (r *customDomainResource) Delete(ctx context.Context, req resource.DeleteRe
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN custom domain", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteCDNCustomDomainWaitHandler(ctx, r.client, projectId, distributionId, name).WaitWithContext(ctx)
 	if err != nil {
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN custom domain", fmt.Sprintf("Custom domain deletion waiting: %v. The custom domain deletion was triggered but confirmation timed out. The custom domain may still be deleting. Check the STACKIT Portal or retry the operation.", err))
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"Custom domain deletion waiting failed: %v. The custom domain deletion was triggered but waiting for completion was interrupted. The custom domain may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting CDN custom domain", fmt.Sprintf("Waiting for custom domain deletion: %v", err))
 		return
 	}
 	tflog.Info(ctx, "CDN custom domain deleted")

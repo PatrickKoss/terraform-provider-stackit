@@ -162,6 +162,13 @@ func (r *serviceAccountKeyResource) Create(ctx context.Context, req resource.Cre
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Set logging context with the project ID and service account email.
 	projectId := model.ProjectId.ValueString()
 	serviceAccountEmail := model.ServiceAccountEmail.ValueString()
@@ -170,6 +177,10 @@ func (r *serviceAccountKeyResource) Create(ctx context.Context, req resource.Cre
 
 	if utils.IsUndefined(model.TtlDays) {
 		model.TtlDays = types.Int64Null()
+	}
+
+	if utils.IsUndefined(minimalModel.TtlDays) {
+		minimalModel.TtlDays = types.Int64Null()
 	}
 
 	// Generate the API request payload.
@@ -184,6 +195,25 @@ func (r *serviceAccountKeyResource) Create(ctx context.Context, req resource.Cre
 
 	if err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Failed to create service account key", fmt.Sprintf("API call error: %v", err))
+		return
+	}
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	err = mapCreateResponse(saAccountKeyResp, &minimalModel)
+	if err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating service account key", fmt.Sprintf("Processing API payload: %v", err))
+		return
+	}
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating service account key", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
 		return
 	}
 
@@ -222,7 +252,7 @@ func (r *serviceAccountKeyResource) Read(ctx context.Context, req resource.ReadR
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
 		// due to security purposes, attempting to get access key for a non-existent Service Account will return 403.
-		if ok && oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusForbidden || oapiErr.StatusCode == http.StatusBadRequest {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone || oapiErr.StatusCode == http.StatusForbidden || oapiErr.StatusCode == http.StatusBadRequest) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -270,6 +300,13 @@ func (r *serviceAccountKeyResource) Delete(ctx context.Context, req resource.Del
 	// Call API to delete the existing service account key.
 	err := r.client.DeleteServiceAccountKey(ctx, projectId, serviceAccountEmail, keyId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Service account key already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting service account key", fmt.Sprintf("Calling API: %v", err))
 		return
 	}

@@ -2,6 +2,7 @@ package affinitygroup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -153,6 +154,15 @@ func (r *affinityGroupResource) Create(ctx context.Context, req resource.CreateR
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	diags = req.Config.Get(ctx, &minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 
@@ -167,7 +177,29 @@ func (r *affinityGroupResource) Create(ctx context.Context, req resource.CreateR
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating affinity group", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
-	ctx = tflog.SetField(ctx, "affinity_group_id", affinityGroupResp.Id)
+	affinityGroupId := *affinityGroupResp.Id
+	ctx = tflog.SetField(ctx, "affinity_group_id", affinityGroupId)
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.AffinityGroupId = types.StringValue(affinityGroupId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, affinityGroupId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating affinity group",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
 
 	// Map response body to schema
 	err = mapFields(ctx, affinityGroupResp, &model)
@@ -199,12 +231,13 @@ func (r *affinityGroupResource) Read(ctx context.Context, req resource.ReadReque
 
 	affinityGroupResp, err := r.client.GetAffinityGroupExecute(ctx, projectId, affinityGroupId)
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		core.LogAndAddError(ctx, &resp.Diagnostics, "Error reading affinity group", fmt.Sprintf("Call API: %v", err))
+		core.LogAndAddError(ctx, &resp.Diagnostics, "Error reading affinity group", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
 
@@ -243,6 +276,13 @@ func (r *affinityGroupResource) Delete(ctx context.Context, req resource.DeleteR
 	// Delete existing affinity group
 	err := r.client.DeleteAffinityGroupExecute(ctx, projectId, affinityGroupId)
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Affinity group already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting affinity group", fmt.Sprintf("Calling API: %v", err))
 		return
 	}

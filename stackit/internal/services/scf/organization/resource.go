@@ -232,6 +232,13 @@ func (s *scfOrganizationResource) Create(ctx context.Context, request resource.C
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	response.Diagnostics.Append(request.Plan.Get(ctx, &minimalModel)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	// Set logging context with the project ID and instance ID.
 	region := model.Region.ValueString()
 	projectId := model.ProjectId.ValueString()
@@ -256,6 +263,27 @@ func (s *scfOrganizationResource) Create(ctx context.Context, request resource.C
 		return
 	}
 	orgId := *scfOrgCreateResponse.Guid
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	minimalModel.OrgId = types.StringValue(orgId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, orgId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(ctx, &response.Diagnostics, "Error creating scf organization", fmt.Sprintf("Setting model fields to null: %v", err))
+		return
+	}
+
+	diags = response.State.Set(ctx, minimalModel)
+	response.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
 
 	// Apply the org quota if provided
 	if quotaId != "" {
@@ -327,7 +355,7 @@ func (s *scfOrganizationResource) Read(ctx context.Context, request resource.Rea
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		ok := errors.As(err, &oapiErr)
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			response.State.RemoveResource(ctx)
 			return
 		}
@@ -437,12 +465,28 @@ func (s *scfOrganizationResource) Delete(ctx context.Context, request resource.D
 	// Call API to delete the existing scf organization.
 	_, err := s.client.DeleteOrganization(ctx, projectId, region, orgId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok && (oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Scf organization already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &response.Diagnostics, "Error deleting scf organization", fmt.Sprintf("Calling API: %v", err))
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
 		return
 	}
 
 	_, err = wait.DeleteOrganizationWaitHandler(ctx, s.client, projectId, model.Region.ValueString(), orgId).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(ctx, fmt.Sprintf("Scf organization deletion waiting failed: %v. The resource deletion was triggered but waiting for completion was interrupted. The resource may still be deleting.", err))
+			return
+		}
 		core.LogAndAddError(ctx, &response.Diagnostics, "Error waiting for scf org deletion", fmt.Sprintf("SCFOrganization deleting waiting: %v", err))
 		return
 	}

@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -192,6 +193,14 @@ func (r *observabilityCredentialResource) Create(ctx context.Context, req resour
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	region := model.Region.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
@@ -210,7 +219,31 @@ func (r *observabilityCredentialResource) Create(ctx context.Context, req resour
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating observability credential", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
-	ctx = tflog.SetField(ctx, "credentials_ref", createResp.Credential.CredentialsRef)
+
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	credentialsRef := *createResp.Credential.CredentialsRef
+	minimalModel.CredentialsRef = types.StringValue(credentialsRef)
+	minimalModel.Region = types.StringValue(region)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, credentialsRef)
+
+	ctx = tflog.SetField(ctx, "credentials_ref", credentialsRef)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating observability credential",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() {
+		return
+	}
 
 	// Map response body to schema
 	err = mapFields(createResp.Credential, &model, region)
@@ -247,8 +280,10 @@ func (r *observabilityCredentialResource) Read(ctx context.Context, req resource
 	// Get credentials
 	credResp, err := r.client.GetCredentials(ctx, projectId, region, credentialsRef).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -295,6 +330,14 @@ func (r *observabilityCredentialResource) Delete(ctx context.Context, req resour
 	// Delete credentials
 	_, err := r.client.DeleteCredentials(ctx, projectId, region, credentialsRef).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Observability credential already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting observability credential", fmt.Sprintf("Calling API: %v", err))
 		return
 	}

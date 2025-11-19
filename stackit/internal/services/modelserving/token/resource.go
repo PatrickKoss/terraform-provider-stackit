@@ -237,6 +237,13 @@ func (r *tokenResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 
 	region := r.providerData.GetRegionWithOverride(model.Region)
@@ -299,8 +306,45 @@ func (r *tokenResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	waitResp, err := wait.CreateModelServingWaitHandler(ctx, r.client, region, projectId, *createTokenResp.Token.Id).WaitWithContext(ctx)
+	// Save minimal state immediately after API call succeeds to ensure idempotency
+	tokenId := *createTokenResp.Token.Id
+	minimalModel.TokenId = types.StringValue(tokenId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, region, tokenId)
+
+	// Set all unknown/null fields to null before saving state
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
+		core.LogAndAddError(
+			ctx,
+			&resp.Diagnostics,
+			"Error creating AI model serving auth token",
+			fmt.Sprintf("Setting model fields to null: %v", err),
+		)
+		return
+	}
+
+	diags = resp.State.Set(ctx, minimalModel)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
+	waitResp, err := wait.CreateModelServingWaitHandler(ctx, r.client, region, projectId, tokenId).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"AI model serving auth token creation waiting failed: %v. The token creation was triggered but waiting for completion was interrupted. The token may still be creating.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating AI model serving auth token", fmt.Sprintf("Waiting for token to be active: %v", err))
 		return
 	}
@@ -344,7 +388,7 @@ func (r *tokenResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	if err != nil {
 		var oapiErr *oapierror.GenericOpenAPIError
 		if errors.As(err, &oapiErr) {
-			if oapiErr.StatusCode == http.StatusNotFound {
+			if oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone {
 				// Remove the resource from the state so Terraform will recreate it
 				resp.State.RemoveResource(ctx)
 				return
@@ -447,8 +491,23 @@ func (r *tokenResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	waitResp, err := wait.UpdateModelServingWaitHandler(ctx, r.client, region, projectId, tokenId).WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"AI model serving auth token update waiting failed: %v. The token update was triggered but waiting for completion was interrupted. The token may still be updating.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error updating AI model serving auth token", fmt.Sprintf("Waiting for token to be updated: %v", err))
 		return
 	}
@@ -492,10 +551,11 @@ func (r *tokenResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	// Delete existing AI model serving auth token. We will ignore the state 'deleting' for now.
 	_, err := r.client.DeleteToken(ctx, region, projectId, tokenId).Execute()
 	if err != nil {
+		// If token is already gone (404 or 410), treat as success for idempotency
 		var oapiErr *oapierror.GenericOpenAPIError
 		if errors.As(err, &oapiErr) {
-			if oapiErr.StatusCode == http.StatusNotFound {
-				resp.State.RemoveResource(ctx)
+			if oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone {
+				tflog.Info(ctx, "AI model serving auth token already deleted")
 				return
 			}
 		}
@@ -504,9 +564,24 @@ func (r *tokenResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		return
 	}
 
+	if !utils.ShouldWait() {
+		tflog.Info(ctx, "Skipping wait; async mode for Crossplane/Upjet")
+		return
+	}
+
 	_, err = wait.DeleteModelServingWaitHandler(ctx, r.client, region, projectId, tokenId).
 		WaitWithContext(ctx)
 	if err != nil {
+		if utils.ShouldIgnoreWaitError(err) {
+			tflog.Warn(
+				ctx,
+				fmt.Sprintf(
+					"AI model serving auth token deletion waiting failed: %v. The token deletion was triggered but waiting for completion was interrupted. The token may still be deleting.",
+					err,
+				),
+			)
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error deleting AI model serving auth token", fmt.Sprintf("Waiting for token to be deleted: %v", err))
 		return
 	}

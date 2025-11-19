@@ -2,6 +2,7 @@ package networkinterfaceattach
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -172,8 +173,10 @@ func (r *networkInterfaceAttachResource) Read(ctx context.Context, req resource.
 
 	nics, err := r.client.ListServerNics(ctx, projectId, serverId).Execute()
 	if err != nil {
-		oapiErr, ok := err.(*oapierror.GenericOpenAPIError) //nolint:errorlint //complaining that error.As should be used to catch wrapped errors, but this error should not be wrapped
-		if ok && oapiErr.StatusCode == http.StatusNotFound {
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -231,6 +234,14 @@ func (r *networkInterfaceAttachResource) Delete(ctx context.Context, req resourc
 	// Remove network_interface from server
 	err := r.client.RemoveNicFromServer(ctx, projectId, serverId, network_interfaceId).Execute()
 	if err != nil {
+		// If resource is already gone (404 or 410), treat as success for idempotency
+		var oapiErr *oapierror.GenericOpenAPIError
+		ok := errors.As(err, &oapiErr)
+		if ok &&
+			(oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone) {
+			tflog.Info(ctx, "Network interface attachment already deleted")
+			return
+		}
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error removing network interface from server", fmt.Sprintf("Calling API: %v", err))
 		return
 	}
