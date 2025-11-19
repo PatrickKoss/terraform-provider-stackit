@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"reflect"
 	"regexp"
@@ -771,7 +772,11 @@ func ShouldIgnoreWaitError(err error) bool {
 	// API 5xx errors
 	var oapiErr *oapierror.GenericOpenAPIError
 	if errors.As(err, &oapiErr) {
-		if oapiErr.StatusCode >= 500 {
+		if oapiErr.StatusCode >= http.StatusInternalServerError {
+			return true
+		}
+
+		if oapiErr.StatusCode == http.StatusNotFound || oapiErr.StatusCode == http.StatusGone {
 			return true
 		}
 	}

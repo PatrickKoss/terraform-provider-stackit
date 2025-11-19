@@ -206,6 +206,13 @@ func (r *recordSetResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	zoneId := model.ZoneId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
@@ -226,16 +233,16 @@ func (r *recordSetResource) Create(ctx context.Context, req resource.CreateReque
 
 	// Write id attributes to state before polling via the wait handler - just in case anything goes wrong during the wait handler
 	recordSetId := *recordSetResp.Rrset.Id
-	model.RecordSetId = types.StringValue(recordSetId)
-	model.Id = utils.BuildInternalTerraformId(projectId, zoneId, recordSetId)
+	minimalModel.RecordSetId = types.StringValue(recordSetId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, zoneId, recordSetId)
 
 	// Set all unknown/null fields to null before saving state
-	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
 		core.LogAndAddError(ctx, &resp.Diagnostics, "Error creating record set", fmt.Sprintf("Setting model fields to null: %v", err))
 		return
 	}
 
-	diags = resp.State.Set(ctx, model)
+	diags = resp.State.Set(ctx, minimalModel)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return

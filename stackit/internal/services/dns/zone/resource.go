@@ -307,6 +307,13 @@ func (r *zoneResource) Create(
 		return
 	}
 
+	// Get a fresh copy from plan for minimal state
+	var minimalModel Model
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &minimalModel)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	projectId := model.ProjectId.ValueString()
 	ctx = tflog.SetField(ctx, "project_id", projectId)
 
@@ -335,11 +342,11 @@ func (r *zoneResource) Create(
 
 	// Save minimal state immediately after API call succeeds to ensure idempotency
 	zoneId := *createResp.Zone.Id
-	model.ZoneId = types.StringValue(zoneId)
-	model.Id = utils.BuildInternalTerraformId(projectId, zoneId)
+	minimalModel.ZoneId = types.StringValue(zoneId)
+	minimalModel.Id = utils.BuildInternalTerraformId(projectId, zoneId)
 
 	// Set all unknown/null fields to null before saving state
-	if err := utils.SetModelFieldsToNull(ctx, &model); err != nil {
+	if err := utils.SetModelFieldsToNull(ctx, &minimalModel); err != nil {
 		core.LogAndAddError(
 			ctx,
 			&resp.Diagnostics,
@@ -349,7 +356,7 @@ func (r *zoneResource) Create(
 		return
 	}
 
-	diags := resp.State.Set(ctx, model)
+	diags := resp.State.Set(ctx, minimalModel)
 	resp.Diagnostics.Append(diags...)
 	if diags.HasError() {
 		return
