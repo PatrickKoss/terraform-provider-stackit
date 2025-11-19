@@ -526,7 +526,7 @@ The example below creates the supporting infrastructure using the STACKIT Terraf
 					listvalidator.SizeBetween(1, 1),
 				},
 				NestedObject: schema.NestedAttributeObject{
-						// +crossplane:reference:type=stackit_network
+					// +crossplane:reference:type=stackit_network
 					Attributes: map[string]schema.Attribute{
 						"network_id": schema.StringAttribute{
 							Description: descriptions["network_id"],

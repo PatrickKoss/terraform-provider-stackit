@@ -297,7 +297,7 @@ func TestUpdate_ChangeTTL(t *testing.T) {
 
 	// Setup mock expectations
 	recordSet := BuildRecordSet(recordSetId, name, zoneId, recordType, records)
-	recordSet.Ttl = utils.Ptr(newTTL) // Updated TTL
+	recordSet.Ttl = utils.Ptr(newTTL)                           // Updated TTL
 	recordSet.State = dns.RECORDSETSTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 	recordSetResp := &dns.RecordSetResponse{Rrset: recordSet}
 

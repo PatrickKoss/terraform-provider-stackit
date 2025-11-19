@@ -27,7 +27,7 @@ func TestUpdate_Success(t *testing.T) {
 
 	// Setup mock expectations - update ACL
 	zone := BuildZone(zoneId, name, dnsName)
-	zone.Acl = utils.Ptr("192.168.0.0/16") // Updated ACL
+	zone.Acl = utils.Ptr("192.168.0.0/16")            // Updated ACL
 	zone.State = dns.ZONESTATE_UPDATE_SUCCEEDED.Ptr() // Update operation completed
 
 	// Mock PartialUpdateZone

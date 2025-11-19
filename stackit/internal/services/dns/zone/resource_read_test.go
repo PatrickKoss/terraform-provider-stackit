@@ -206,8 +206,8 @@ func TestRead_DetectDrift(t *testing.T) {
 
 	// Setup mock expectations - zone ACL and DefaultTTL changed in cloud
 	zone := BuildZone(zoneId, name, dnsName)
-	zone.Acl = utils.Ptr("192.168.0.0/16")      // ACL changed
-	zone.DefaultTTL = utils.Ptr(int64(7200))    // TTL changed
+	zone.Acl = utils.Ptr("192.168.0.0/16")   // ACL changed
+	zone.DefaultTTL = utils.Ptr(int64(7200)) // TTL changed
 	zoneResp := &dns.ZoneResponse{Zone: zone}
 
 	// Mock GetZone - returns drifted state
@@ -230,8 +230,8 @@ func TestRead_DetectDrift(t *testing.T) {
 		ZoneId:     types.StringValue(zoneId),
 		Name:       types.StringValue(name),
 		DnsName:    types.StringValue(dnsName),
-		Acl:        types.StringValue("0.0.0.0/0"),       // Old value
-		DefaultTTL: types.Int64Value(3600),               // Old value
+		Acl:        types.StringValue("0.0.0.0/0"), // Old value
+		DefaultTTL: types.Int64Value(3600),         // Old value
 		Primaries:  types.ListNull(types.StringType),
 	}
 

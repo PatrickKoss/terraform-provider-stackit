@@ -75,7 +75,7 @@ func NewNetworkAreaResource() resource.Resource {
 
 // networkResource is the resource implementation.
 type networkAreaResource struct {
-	client iaas.DefaultApi
+	client                iaas.DefaultApi
 	resourceManagerClient *resourcemanager.APIClient
 }
 

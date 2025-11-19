@@ -13,7 +13,7 @@ func TestSimpleMockSetup(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockClient := mock_instance.NewMockDefaultApi(ctrl)
-	
+
 	// Create resource with mock
 	resource := &instanceResource{
 		client: mockClient,

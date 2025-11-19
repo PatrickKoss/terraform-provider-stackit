@@ -112,10 +112,10 @@ func TestSetModelFieldsToNull_DirectCall(t *testing.T) {
 
 	// Create a model with various unknown fields
 	model := networkModel.Model{
-		ProjectId:        types.StringValue("test-project"),
-		Name:             types.StringValue("test-network"),
-		NetworkId:        types.StringValue("network-123"),
-		Id:               types.StringValue("test-project,network-123"),
+		ProjectId: types.StringValue("test-project"),
+		Name:      types.StringValue("test-network"),
+		NetworkId: types.StringValue("network-123"),
+		Id:        types.StringValue("test-project,network-123"),
 		// Unknown fields that should be converted to null
 		IPv4Gateway:      types.StringUnknown(),
 		IPv6Gateway:      types.StringUnknown(),
@@ -192,13 +192,13 @@ func TestSetModelFieldsToNull_ComplexScenario(t *testing.T) {
 
 	// Scenario: Mix of known values, nulls, and unknowns
 	model := networkModel.Model{
-		ProjectId:        types.StringValue("proj-1"),
-		NetworkId:        types.StringValue("net-1"),
-		Id:               types.StringValue("proj-1,net-1"),
-		Name:             types.StringValue("my-network"),
+		ProjectId: types.StringValue("proj-1"),
+		NetworkId: types.StringValue("net-1"),
+		Id:        types.StringValue("proj-1,net-1"),
+		Name:      types.StringValue("my-network"),
 		// Some fields are already null
-		IPv4Gateway:      types.StringNull(),
-		IPv6Gateway:      types.StringNull(),
+		IPv4Gateway: types.StringNull(),
+		IPv6Gateway: types.StringNull(),
 		// Some are unknown
 		IPv6Prefix:       types.StringUnknown(),
 		IPv6PrefixLength: types.Int64Unknown(),
